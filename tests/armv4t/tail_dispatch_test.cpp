@@ -98,11 +98,40 @@ void test_swi() {
     }
     g_bios_hle_hook = nullptr;
 }
+
+void test_swi_return_ledger() {
+    // A corrupted SVC return keeps the recorded SWI continuation.
+    runtime_fp_reset();  // hermetic ledger (also clears the fp ring)
+    reset(true);
+    runtime_swi(0x06u);
+    check((g_cpu.cpsr & 0x1Fu) == 0x13u, "ledger test starts in SVC mode");
+    // The clobbered LR_svc feeds the epilogue a foreign target (the
+    // IRQ-interrupted mainline); the ledger must win.
+    runtime_exception_return(0x080033BAu);
+    check(g_cpu.R[15] == 0x08000102u,
+          "ledger override keeps the recorded SWI continuation");
+    // A legal return lands untouched.
+    runtime_fp_reset();
+    reset(false);
+    runtime_swi(0x060000u);
+    runtime_exception_return(0x08000102u);
+    check(g_cpu.R[15] == 0x08000102u, "ledger passes a legal SVC return");
+    // An empty ledger (e.g. after a machine-reset origin) never overrides.
+    runtime_fp_reset();
+    reset(false);
+    runtime_swi(0x060000u);
+    runtime_fp_reset();
+    runtime_exception_return(0x080033BAu);
+    check(g_cpu.R[15] == 0x080033BAu,
+          "empty ledger leaves an SVC return alone");
+    runtime_fp_reset();
+}
 }  // namespace
 
 int main() {
     test_exchange_and_miss();
     test_swi();
+    test_swi_return_ledger();
     if (failures) return 1;
     std::puts("tail dispatch: exchange, misses, RAM hooks and SWI parity passed");
     return 0;
