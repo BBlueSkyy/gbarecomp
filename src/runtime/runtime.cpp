@@ -2357,9 +2357,49 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         info.io_size = gba::GbaIo::kIoSize;
         opts.extended_view_frame(&info);
     };
-    if (opts.extended_view_frame) {
-        runtime_set_frame_start_hook(publish_extended_view_frame);
-        publish_extended_view_frame();
+    // Validation-only constant writes (GameShark-style), applied at every
+    // frame start: GBARECOMP_CHEATS="ADDR:BITS:VALUE;..." in hex, e.g.
+    // "02001234:8:20;03000A10:16:FFFF". RAM only; never part of normal play,
+    // and diagnostic replay capture is disabled while any cheat is active.
+    struct Cheat { uint8_t* ptr; unsigned bytes; uint32_t value; };
+    std::vector<Cheat> cheats;
+    if (const char* spec = std::getenv("GBARECOMP_CHEATS"); spec && *spec) {
+        std::string text(spec);
+        std::size_t start = 0;
+        while (start < text.size()) {
+            const std::size_t end = text.find(';', start);
+            const std::string item = text.substr(start, end == std::string::npos
+                                                            ? std::string::npos : end - start);
+            unsigned long addr = 0, bits = 0, value = 0;
+            if (std::sscanf(item.c_str(), "%lx:%lu:%lx", &addr, &bits, &value) == 3 &&
+                (bits == 8 || bits == 16 || bits == 32)) {
+                const unsigned bytes = static_cast<unsigned>(bits / 8);
+                uint8_t* ptr = nullptr;
+                if (addr >= 0x02000000u && addr + bytes <= 0x02040000u)
+                    ptr = bus.ewram_ptr() + (addr - 0x02000000u);
+                else if (addr >= 0x03000000u && addr + bytes <= 0x03008000u)
+                    ptr = bus.iwram_ptr() + (addr - 0x03000000u);
+                if (ptr) cheats.push_back({ptr, bytes, static_cast<uint32_t>(value)});
+                else std::fprintf(stderr, "[gbarecomp:runtime] cheat outside RAM ignored: %s\n",
+                                  item.c_str());
+            } else if (!item.empty()) {
+                std::fprintf(stderr, "[gbarecomp:runtime] invalid cheat ignored: %s\n",
+                             item.c_str());
+            }
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        std::fprintf(stderr, "[gbarecomp:runtime] cheats=ENABLED count=%zu "
+                             "(validation only)\n", cheats.size());
+    }
+    if (opts.extended_view_frame || !cheats.empty()) {
+        runtime_set_frame_start_hook([&]() {
+            for (const Cheat& c : cheats)
+                for (unsigned i = 0; i < c.bytes; ++i)
+                    c.ptr[i] = static_cast<uint8_t>(c.value >> (8 * i));
+            if (opts.extended_view_frame) publish_extended_view_frame();
+        });
+        if (opts.extended_view_frame) publish_extended_view_frame();
     }
     struct ClearFrameStartHook {
         ~ClearFrameStartHook() { runtime_set_frame_start_hook(nullptr); }
@@ -3996,6 +4036,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             (diag_exe_dir / "config.ini").string(), opts.diagnostic_replay_default);
         if (const char* e = std::getenv("GBARECOMP_DIAGNOSTICS"); e && *e)
             want = e[0] != '0';
+        if (want && !cheats.empty()) {
+            std::fprintf(stderr, "[gbarecomp:diagnostics] replay capture disabled "
+                                 "while GBARECOMP_CHEATS is active\n");
+            want = false;
+        }
         if (want && args.window && args.tcp_port <= 0) {
             if (present_in_place)
                 diag.start_recording(diag_config, diag_host);
