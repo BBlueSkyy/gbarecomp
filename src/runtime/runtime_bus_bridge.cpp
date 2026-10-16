@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -979,6 +981,38 @@ uint32_t present_in_place_call_depth_limit() {
     return limit;
 }
 
+// Present-in-place keeps the host call chain alive across frames, and the
+// guest call-return depth above does not bound it: non-returning indirect
+// transfers (BX/LDR PC chains through runtime_dispatch) nest host frames that
+// never appear on the guest call stack. Measure the real host stack instead
+// and unwind at a completed VBlank once it passes this budget. The runner
+// redispatches the published PC, so guest execution is unchanged.
+constexpr std::size_t kPresentInPlaceStackBudget = 1024u * 1024u;
+std::uintptr_t g_present_stack_base = 0;
+
+std::size_t present_in_place_stack_budget() {
+    static const std::size_t budget = [] {
+        const char* value = std::getenv("GBARECOMP_PRESENT_IN_PLACE_STACK_KB");
+        if (!value || value[0] == '\0') return kPresentInPlaceStackBudget;
+        const unsigned long kb = std::strtoul(value, nullptr, 0);
+        return kb >= 64u && kb <= 64u * 1024u ? static_cast<std::size_t>(kb) * 1024u
+                                              : kPresentInPlaceStackBudget;
+    }();
+    return budget;
+}
+
+std::size_t present_in_place_stack_used() {
+    if (!g_present_stack_base) return 0;
+    volatile char here = 0;
+    const auto at = reinterpret_cast<std::uintptr_t>(&here);
+    return g_present_stack_base > at ? g_present_stack_base - at : 0;
+}
+
+void runtime_mark_present_stack_base() {
+    volatile char here = 0;
+    g_present_stack_base = reinterpret_cast<std::uintptr_t>(&here);
+}
+
 void runtime_set_frame_present_hook(std::function<bool()> h) {
     g_frame_present_hook = std::move(h);
     g_frame_present_quit = false;
@@ -1100,6 +1134,20 @@ extern "C" bool runtime_should_yield(void) {
                             "depth=%u limit=%u count=%llu pc=0x%08X\n",
                             call_depth, call_depth_limit, forced_unwinds,
                             g_cpu.R[15]);
+                    }
+                    return true;
+                }
+                const std::size_t stack_used = present_in_place_stack_used();
+                if (stack_used >= present_in_place_stack_budget()) {
+                    static unsigned long long stack_unwinds = 0;
+                    ++stack_unwinds;
+                    if ((stack_unwinds & (stack_unwinds - 1u)) == 0u) {
+                        std::fprintf(stderr,
+                            "runtime: present-in-place host-stack unwind "
+                            "used=%zu budget=%zu guest_depth=%u count=%llu "
+                            "pc=0x%08X\n",
+                            stack_used, present_in_place_stack_budget(),
+                            call_depth, stack_unwinds, g_cpu.R[15]);
                     }
                     return true;
                 }

@@ -92,6 +92,7 @@ extern "C" unsigned long long g_runtime_irq_entries;
 // instead of unwinding the guest stack — see the windowed runner below.
 void runtime_set_frame_present_hook(std::function<bool()>);
 void runtime_request_present_unwind();
+void runtime_mark_present_stack_base();
 void runtime_set_host_service_hook(std::function<void()>);
 void runtime_set_frame_start_hook(std::function<void()>);
 void runtime_set_vblank_input_hook(std::function<void()>);
@@ -4366,6 +4367,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         });
     }
 
+    // Present-in-place measures host stack growth from the runner frame.
+    runtime_mark_present_stack_base();
     int dispatches_since_pump = 0;
     if (input_replay_requested) apply_input_replay();
     if (args.window) pump_host_input();
