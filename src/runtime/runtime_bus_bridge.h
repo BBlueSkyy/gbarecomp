@@ -34,6 +34,10 @@ struct RuntimeTimingContext {
 };
 void runtime_capture_timing_context(RuntimeTimingContext&);
 void runtime_restore_timing_context(const RuntimeTimingContext&);
+// Diagnostic replay: reinstate the recorded scheduling values only. Unlike
+// runtime_restore_timing_context (machine rebinding) this keeps the idle-loop
+// proofs, which a replay that is in step shares with the recording.
+void runtime_restore_timing_values(const RuntimeTimingContext&);
 // Conservative native execution backend for the local-link qualification
 // harness. CPU instructions accrue cycle debt; the session advances devices
 // for every machine on one timeline. No machine's hardware runs ahead.

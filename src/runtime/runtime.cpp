@@ -42,6 +42,8 @@
 #include "mod_runtime.h"
 #endif
 #include "../gba/sha1.h"
+#include "diagnostic_replay.h"
+#include "replay_writer.h"
 #include "snapshot.h"
 #include "file_replace.h"
 #include "mod_state.h"
@@ -89,6 +91,7 @@ extern "C" unsigned long long g_runtime_irq_entries;
 // a hook makes the per-VBlank frame-present yield present + resume in place
 // instead of unwinding the guest stack — see the windowed runner below.
 void runtime_set_frame_present_hook(std::function<bool()>);
+void runtime_request_present_unwind();
 void runtime_set_host_service_hook(std::function<void()>);
 void runtime_set_frame_start_hook(std::function<void()>);
 void runtime_set_vblank_input_hook(std::function<void()>);
@@ -169,6 +172,9 @@ struct Args {
     std::string dump_bmp;
     std::string dump_png;    // --dump-png: final framebuffer as PNG (preferred)
     std::string load_state;  // --load-state <path>: headless savestate load
+    // --replay-diagnostic <segment.replay>: offline playback of a recorded
+    // diagnostic replay; exits nonzero at the first divergence.
+    std::string replay_diagnostic;
     // [video] screen = raw|unlit|frontlit|backlit|classic — present-time
     // color simulation (see color_lut). Empty = raw (passthrough). The
     // GBARECOMP_SCREEN env var overrides this at launch; --screen overrides
@@ -795,7 +801,7 @@ constexpr std::string_view kCliValueFlags[] = {
     "--dump-png",    "--load-state",    "--view-width",    "--widescreen",
     "--save",        "--save-path",     "--gyro-sensitivity",
     "--sharp-filter", "--linear-filter", "--affine-filter", "--screen",
-    "--volume",
+    "--volume",      "--replay-diagnostic", "--state-dir",
 };
 
 bool cli_flag_takes_value(std::string_view flag) {
@@ -1014,6 +1020,12 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
             const char* v = need_value(s.c_str());
             if (!v) return false;
             args->save_path = v;
+            continue;
+        }
+        if (s == "--replay-diagnostic") {
+            const char* v = need_value("--replay-diagnostic");
+            if (!v) return false;
+            args->replay_diagnostic = v;
             continue;
         }
         if (s == "--state-dir") {
@@ -1447,8 +1459,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         }
         // Headless fallback: one frame is enough to validate the runtime
         // came up. Explicit --window runs stay open-ended (let the user
-        // close the window).
-        if (!args.window) {
+        // close the window), as does diagnostic playback (it ends with the
+        // recording).
+        if (!args.window && args.replay_diagnostic.empty()) {
             args.frames = 1;
             args.frames_set = true;
         }
@@ -2226,6 +2239,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         // explicitly restart its already-registered source. The host bridge's
         // already-queued native audio remains a separate future flush concern.
         gba_mod_audio_on_savestate_load();
+        // KEYINPUT reflects the live controller, never the instant the state
+        // was saved: re-latch the host keys over the restored register.
+        bus.io().set_keyinput(bus.io().host_keyinput());
         sync_frame_counter();  // realign vblank_count with restored PPU
         // Re-origin the fingerprint cycle clock + ring at the load point so the
         // recomp and interp oracle share a cycle origin for diff_cycle_trace.py.
@@ -2249,6 +2265,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                                      make_snapshot_ctx(), &e)) {
             return false;
         }
+        bus.io().set_keyinput(bus.io().host_keyinput());  // see do_savestate_load
         sync_frame_counter();
         g_runtime_cycles = 0;
         runtime_fp_reset();
@@ -2725,12 +2742,16 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     FramePhaseRing frame_phase;
     auto apply_runtime_view_geometry = [&](const ViewGeometry& geometry) -> bool {
         if (geometry.width == ppu.render_width() && geometry.height == ppu.render_height()) return false;
-        if (!win.set_surface_size(static_cast<int>(geometry.width),
-                                  static_cast<int>(geometry.height))) return false;
+        // Headless diagnostic playback applies recorded geometry without a
+        // window; the guest-visible policy below is identical either way.
+        const bool windowed = win.is_open();
+        if (windowed && !win.set_surface_size(static_cast<int>(geometry.width),
+                                              static_cast<int>(geometry.height))) return false;
         ppu.set_view_margins(geometry.extra_left, geometry.extra_right,
                              geometry.extra_top, geometry.extra_bottom);
-        win.set_view_margins(ppu.view_extra_left(), ppu.view_extra_right(),
-                             ppu.view_extra_top(), ppu.view_extra_bottom());
+        if (windowed)
+            win.set_view_margins(ppu.view_extra_left(), ppu.view_extra_right(),
+                                 ppu.view_extra_top(), ppu.view_extra_bottom());
         if (opts.input_frame) publish_headless_touch_presentation();
         args.view_width = static_cast<int>(ppu.render_width());
         g_ws_extra_left = static_cast<unsigned>(ppu.view_extra_left());
@@ -3209,6 +3230,15 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         next_rewind_capture_frame = frame + rewind_interval;
     };
 
+    // Always-on diagnostic replay (configured once present-in-place is known;
+    // see docs/DIAGNOSTIC_REPLAY.md). Declared here so host input handling can
+    // yield to playback.
+    DiagnosticReplay diag;
+    // True while the windowed outer loop polls host events between frame
+    // boundaries. A capture applies guest-visible input only at frame
+    // boundaries, the points playback reproduces exactly.
+    bool pump_mid_frame = false;
+
     // Optional frame-indexed KEYINPUT trace. Interactive discovery records
     // every observed key-state change and flushes it immediately; strict
     // acceptance can replay the frame-indexed trace from the same initial
@@ -3405,6 +3435,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 ObserverStateRequest* r = observer_pending;
                 r->ok = r->save ? do_savestate_save(r->path, r->err)
                                 : do_savestate_load(r->path, r->err);
+                // A restore inside the present-in-place hook must not resume
+                // the guest in the pre-restore host call chain.
+                if (!r->save && r->ok) runtime_request_present_unwind();
                 if (!r->save && r->ok) {
                     last_presented_frame = ppu.frame_count() - 1;
                     if (pacer) pacer->reset();
@@ -3447,8 +3480,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             std::fflush(stdout);
         }
         ev.fast_forward = ev.fast_forward || assist_script_fast;
-        if (!input_replay_requested) bus.io().set_keyinput(ev.keyinput);
-        if (bus.gyro().active()) {
+        // Recorded inputs own the guest during diagnostic playback.
+        const bool sim_inputs_locked = input_replay_requested || diag.playing() ||
+                                       (pump_mid_frame && diag.recording());
+        if (!sim_inputs_locked) bus.io().set_keyinput(ev.keyinput);
+        if (bus.gyro().active() && !sim_inputs_locked) {
             // Mouse-drag is angular velocity, not absolute angle: moving while
             // held produces rotation and holding still returns to center.
             const float raw_offset = ev.mouse_gyro_active
@@ -3506,6 +3542,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                     host_quit = true;
                 }
             }
+        }
+        if (diag.playing()) {
+            ev.solar_live = false;
+            ev.solar_brighter = ev.solar_dimmer = false;
         }
         if (bus.solar().active() && ev.solar_live) {
             // Release the manual override; the game's light source resumes.
@@ -3583,6 +3623,15 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             ev.save_slot = 0;
             ev.load_slot = 0;
         }
+        if (diag.playing()) {
+            // A state restore would desynchronize the recorded session.
+            ev.load_slot = 0;
+            ev.rewind = false;
+#if defined(GBARECOMP_RUNTIME_UI)
+            runtime_ui_context.pending_load_slot = 0;
+            runtime_ui_context.pending_rewind = false;
+#endif
+        }
         if (ev.save_slot) {
             std::string path = slot_path(ev.save_slot);
             std::string e;
@@ -3604,6 +3653,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             std::string path = slot_path(ev.load_slot);
             std::string e;
             if (do_savestate_load(path, e)) {
+                // The snapshot contract is a clean dispatch boundary. Inside
+                // the present-in-place hook the guest is mid-dispatch, so the
+                // restored machine redispatches from its PC instead of
+                // resuming in the pre-restore host call chain.
+                runtime_request_present_unwind();
                 std::printf("savestate_loaded slot=%d path=\"%s\" pc=0x%08x "
                             "frame=%llu\n", ev.load_slot, path.c_str(),
                             g_cpu.R[15],
@@ -3647,6 +3701,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 std::string e;
                 if (do_savestate_load_bytes(
                         rewind_history[target_index].state, e)) {
+                    runtime_request_present_unwind();  // see slot load above
                     while (rewind_history.size() > target_index + 1)
                         rewind_history.pop_back();
                     last_presented_frame = ppu.frame_count() - 1;
@@ -3789,6 +3844,165 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     const char* pip_env = std::getenv("GBARECOMP_PRESENT_IN_PLACE");
     const bool present_in_place =
         (pip_env ? pip_env[0] != '0' : true) && !ws_sidecar_enabled();
+
+    // ── Diagnostic replay: capture (default for interactive play) or playback.
+    // Inputs are sampled at the present-in-place VBlank hook, the one frame
+    // boundary that is identical in a live session and in playback; sessions
+    // without that hook (GBARECOMP_PRESENT_IN_PLACE=0) are not captured.
+    const std::filesystem::path diag_exe_path(argc > 0 && argv[0] ? argv[0] : "");
+    const std::filesystem::path diag_exe_dir =
+        diag_exe_path.has_parent_path() ? diag_exe_path.parent_path()
+                                        : std::filesystem::path(".");
+    DiagnosticReplayConfig diag_config;
+    diag_config.tag = diag_exe_path.stem().string();
+    if (diag_config.tag.empty()) diag_config.tag = "gbarecomp";
+    diag_config.rom_sha1 = rom_sha1;
+    diag_config.engine_revision = diagnostic_engine_revision();
+    diag_config.executable_hash = diagnostic_executable_hash();
+    diag_config.title = opts.builtin_game_name && *opts.builtin_game_name
+        ? opts.builtin_game_name : GBARECOMP_WINDOW_TITLE;
+    if (const char* d = std::getenv("GBARECOMP_DIAGNOSTICS_DIR"); d && *d)
+        diag_config.directory = d;
+    else
+        diag_config.directory = (diag_exe_dir / "diagnostics" / "replays").string();
+    if (const char* mib = std::getenv("GBARECOMP_DIAGNOSTICS_HISTORY_MIB"); mib && *mib) {
+        int n = 0;
+        if (parse_int(mib, &n) && n >= 8 && n <= 4096)
+            diag_config.history_bytes = static_cast<std::size_t>(n) * 1024u * 1024u;
+    }
+    diag_config.sidecars = {
+        {(diag_exe_dir / "config.ini").string(), ".config.ini"},
+        {args.config, ".game.toml"},
+        {(diag_exe_dir / "mods" / "state.toml").string(), ".mods.toml"},
+        {args.save_path, ".sav"},
+    };
+    {
+        std::string argv_text;
+        for (int i = 0; i < argc; ++i) {
+            argv_text += argv[i] ? argv[i] : "";
+            argv_text += '\n';
+        }
+        diag_config.inline_sidecars = {{argv_text, ".args.txt"}};
+    }
+    DiagnosticReplayHost diag_host;
+    diag_host.frame = [&]() -> uint64_t { return ppu.frame_count(); };
+    diag_host.state_epoch = []() -> uint64_t {
+        return static_cast<uint64_t>(g_runtime_state_epoch);
+    };
+    diag_host.save_state = [&](std::vector<uint8_t>& bytes, std::string& e) {
+        return do_savestate_save_bytes(bytes, e);
+    };
+    diag_host.load_state = [&](const std::vector<uint8_t>& bytes, std::string& e) {
+        if (!do_savestate_load_bytes(bytes, e)) return false;
+        if (pacer) pacer->reset();
+        rewind_history.clear();
+        next_rewind_capture_frame = ppu.frame_count();
+        return true;
+    };
+    diag_host.timing_capture = []() {
+        RuntimeTimingContext t;
+        runtime_capture_timing_context(t);
+        char text[160];
+        std::snprintf(text, sizeof(text), "%llu %llu %llu %llu %lld",
+                      static_cast<unsigned long long>(t.cycles),
+                      static_cast<unsigned long long>(t.vblank_starts),
+                      static_cast<unsigned long long>(t.yielded_vblank),
+                      static_cast<unsigned long long>(t.pending_cycles),
+                      static_cast<long long>(t.event_budget));
+        return std::string(text);
+    };
+    diag_host.timing_restore = [](const std::string& text) {
+        unsigned long long c = 0, v = 0, y = 0, pc = 0;
+        long long budget = 0;
+        if (std::sscanf(text.c_str(), "%llu %llu %llu %llu %lld", &c, &v, &y, &pc,
+                        &budget) != 5)
+            return false;
+        RuntimeTimingContext t;
+        t.cycles = c;
+        t.vblank_starts = v;
+        t.yielded_vblank = y;
+        t.pending_cycles = pc;
+        t.event_budget = budget;
+        runtime_restore_timing_values(t);
+        return true;
+    };
+    diag_host.regions = [&](std::vector<DiagnosticRegion>& out) {
+        out.clear();
+        out.push_back({"EWRAM", bus.ewram_ptr(), 256u * 1024u});
+        out.push_back({"IWRAM", bus.iwram_ptr(), 32u * 1024u});
+        out.push_back({"CPU", &g_cpu, sizeof(g_cpu)});
+        out.push_back({"IO", bus.io().raw(), gba::GbaIo::kIoSize});
+        out.push_back({"call-stack", runtime_call_stack_data(),
+                       runtime_call_stack_depth() * sizeof(uint32_t)});
+        out.push_back({"VRAM", bus.vram_ptr(), 96u * 1024u});
+        out.push_back({"palette", bus.pal_ptr(), 1024u});
+        out.push_back({"OAM", bus.oam_ptr(), 1024u});
+    };
+    diag_host.save_memory = [&](std::vector<uint8_t>& out) {
+        const auto& save = bus.save();
+        if (save.flash_enabled()) out = save.flash_bytes();
+        else if (save.eeprom_enabled()) out = save.eeprom_bytes();
+        else if (save.sram_enabled()) out = save.sram_bytes();
+        else out.clear();
+    };
+    diag_host.save_write_seq = [&]() -> uint64_t { return bus.save().write_seq(); };
+    diag_host.capture_input = [&](DiagnosticFrameInput& in) {
+        // The register the guest reads, not the host latch behind it.
+        in.keyinput = static_cast<uint16_t>(
+            (bus.io().raw()[0x130] | (bus.io().raw()[0x131] << 8)) & 0x03FFu);
+        in.gyro = bus.gyro().active() ? bus.gyro().sample_offset() : 0;
+        in.solar = bus.solar().active() ? bus.solar().diagnostic_brightness() : -1;
+        if (bus.rtc().active()) in.rtc = bus.rtc().diagnostic_host_seconds();
+        in.width = static_cast<uint16_t>(ppu.render_width());
+        in.height = static_cast<uint16_t>(ppu.render_height());
+        in.extra_left = static_cast<uint16_t>(ppu.view_extra_left());
+        in.extra_right = static_cast<uint16_t>(ppu.view_extra_right());
+        in.extra_top = static_cast<uint16_t>(ppu.view_extra_top());
+        in.extra_bottom = static_cast<uint16_t>(ppu.view_extra_bottom());
+    };
+    diag_host.apply_input = [&](const DiagnosticFrameInput& in) {
+        bus.io().set_keyinput(in.keyinput);
+        bus.io().set_synthesized_keyinput(0x03FFu);
+        if (bus.gyro().active()) bus.gyro().set_sample_offset(in.gyro);
+        if (bus.solar().active()) bus.solar().set_diagnostic_brightness(in.solar);
+        if (bus.rtc().active() && in.rtc != std::numeric_limits<int64_t>::min())
+            bus.rtc().set_diagnostic_host_seconds(in.rtc);
+        ViewGeometry geometry;
+        geometry.width = in.width;
+        geometry.height = in.height;
+        geometry.extra_left = in.extra_left;
+        geometry.extra_right = in.extra_right;
+        geometry.extra_top = in.extra_top;
+        geometry.extra_bottom = in.extra_bottom;
+        apply_runtime_view_geometry(geometry);
+    };
+    diag_host.request_unwind = []() { runtime_request_present_unwind(); };
+    if (!args.replay_diagnostic.empty()) {
+        if (!present_in_place || args.tcp_port > 0) {
+            std::fprintf(stderr, "[gbarecomp:diagnostics] --replay-diagnostic needs "
+                                 "present-in-place and no --tcp\n");
+            gbarecomp::overlay_loader_shutdown();
+            runtime_shutdown();
+            return 2;
+        }
+        if (!diag.start_playback(args.replay_diagnostic, diag_config, diag_host)) {
+            gbarecomp::overlay_loader_shutdown();
+            runtime_shutdown();
+            return 2;
+        }
+    } else {
+        bool want = diagnostic_replay_setting(
+            (diag_exe_dir / "config.ini").string(), opts.diagnostic_replay_default);
+        if (const char* e = std::getenv("GBARECOMP_DIAGNOSTICS"); e && *e)
+            want = e[0] != '0';
+        if (want && args.window && args.tcp_port <= 0) {
+            if (present_in_place)
+                diag.start_recording(diag_config, diag_host);
+            else
+                std::fprintf(stderr, "[gbarecomp:diagnostics] replay capture needs "
+                                     "present-in-place; not recording\n");
+        }
+    }
     if (args.window && present_in_place) {
         std::fprintf(stderr, "[gbarecomp:runtime] present-in-place ON "
                      "(frame-boundary resume misses eliminated structurally; "
@@ -3796,6 +4010,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         runtime_set_frame_present_hook([&]() -> bool {
             uint64_t frame = ppu.frame_count();
             if (frame != last_presented_frame) {
+                // The previous frame has executed: fingerprint it before any
+                // host work at this boundary.
+                const bool repeated_boundary = diag.repeated_boundary();
+                diag.frame_end();
                 const bool phase_active = frame_phase.active();
                 uint64_t fp_t0 = 0;
                 uint64_t fp_t1 = 0;
@@ -3825,13 +4043,20 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 // the whole session, so the outer loop's auto-flush never runs.
                 maybe_flush_battery(frame);
                 if (phase_active) fp_t3 = FramePhaseRing::now_ns();
+                pump_mid_frame = repeated_boundary;
                 pump_host_input();
+                pump_mid_frame = false;
                 service_host_pause();
                 // Present-in-place can remain inside a single step_once() for
                 // the entire windowed session. Advance deterministic replays
                 // here as well as in the outer loop so windowed repros exercise
                 // the same frame-indexed input as headless acceptance runs.
-                if (input_replay_requested) apply_input_replay();
+                if (input_replay_requested && !(repeated_boundary && diag.recording()))
+                    apply_input_replay();
+                // Every host input for the next frame is final here.
+                diag.frame_begin('h');
+                if (diag.playing() && (diag.finished() || diag.failed()))
+                    host_quit = true;
                 if (phase_active) fp_t4 = FramePhaseRing::now_ns();
                 last_presented_frame = frame;
                 if (present_frame) {
@@ -4108,7 +4333,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     // still require the outer loop at each frame boundary.
     const bool passive_headless_present_in_place =
         !args.window && args.frames >= 0 && args.tcp_port <= 0 &&
-        !demo_input && !input_replay_requested && present_in_place;
+        !demo_input && !input_replay_requested && present_in_place &&
+        !diag.playing();
     if (passive_headless_present_in_place) {
         std::fprintf(stderr, "[gbarecomp:runtime] headless present-in-place ON "
                      "(unwind at final frame only; "
@@ -4116,6 +4342,27 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         runtime_set_frame_present_hook([&]() -> bool {
             return ppu.frame_count() - headless_base_frame >=
                    static_cast<uint64_t>(args.frames);
+        });
+    }
+
+    // Headless diagnostic playback visits the same two frame boundaries a
+    // windowed capture does (present-in-place hook and runner loop), without
+    // presentation.
+    auto headless_playback_boundary = [&](char site) {
+        const uint64_t frame = ppu.frame_count();
+        if (frame == last_presented_frame) return;
+        diag.frame_end();
+        diag.frame_begin(site);
+        last_presented_frame = frame;
+        if (diag.finished() || diag.failed()) host_quit = true;
+        if (args.frames >= 0 &&
+            frame - headless_base_frame >= static_cast<uint64_t>(args.frames))
+            host_quit = true;
+    };
+    if (!args.window && diag.playing()) {
+        runtime_set_frame_present_hook([&]() -> bool {
+            headless_playback_boundary('h');
+            return host_quit;
         });
     }
 
@@ -4133,7 +4380,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         if (host_quit) break;
         if (!step_once()) break;
         if (input_replay_requested) {
-            apply_input_replay();
+            // A windowed capture applies guest input only at frame
+            // boundaries (below), where playback reapplies it.
+            if (!(args.window && diag.recording())) apply_input_replay();
         } else if (demo_input) {
             const uint64_t fc = ppu.frame_count();
             if (fc != demo_last_frame) {
@@ -4182,14 +4431,21 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                     ws_sidecar_sync_frame();
             }
         }
+        if (!args.window && diag.playing()) headless_playback_boundary('l');
         if (args.window) {
             ++dispatches_since_pump;
             if (dispatches_since_pump >= 512) {
+                pump_mid_frame = true;
                 pump_host_input();
+                pump_mid_frame = false;
                 dispatches_since_pump = 0;
             }
             uint64_t frame = ppu.frame_count();
             if (frame != last_presented_frame) {
+                // HALT-driven games advance frames here rather than in the
+                // present-in-place hook; both boundaries are captured.
+                const bool repeated_boundary = diag.repeated_boundary();
+                diag.frame_end();
                 const bool phase_active = frame_phase.active();
                 uint64_t fp_t0 = 0;
                 uint64_t fp_t1 = 0;
@@ -4226,7 +4482,14 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 if (phase_active) fp_t2 = FramePhaseRing::now_ns();
                 drain_host_audio();
                 if (phase_active) fp_t3 = FramePhaseRing::now_ns();
+                pump_mid_frame = repeated_boundary;
                 pump_host_input();
+                pump_mid_frame = false;
+                if (input_replay_requested && !(repeated_boundary && diag.recording()))
+                    apply_input_replay();
+                diag.frame_begin('l');
+                if (diag.playing() && (diag.finished() || diag.failed()))
+                    host_quit = true;
                 if (phase_active) fp_t4 = FramePhaseRing::now_ns();
                 dispatches_since_pump = 0;
                 last_presented_frame = frame;
@@ -4332,6 +4595,19 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                     gameplay_seconds > 0 ? frames_presented / gameplay_seconds : 0);
     }
     write_session_diagnostics(opts, "exit", ppu.frame_count());
+    // Drain and join the replay writer before the process tears down.
+    diag.shutdown();
+    int diag_exit = 0;
+    if (diag.playing()) {
+        if (diag.failed()) diag_exit = 3;
+        else if (!diag.finished()) {
+            std::fprintf(stderr,
+                         "[gbarecomp:diagnostics] replay stopped early after %llu "
+                         "matched frames\n",
+                         static_cast<unsigned long long>(diag.matched_frames()));
+            diag_exit = 4;
+        }
+    }
 
     if (!args.dump_bmp.empty() || !args.dump_png.empty()) {
         std::vector<uint8_t> fb(ppu.render_bytes(), 0);
@@ -4403,6 +4679,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     gbarecomp::overlay_loader_shutdown();  // join worker + drain before banner
     emit_exit_diagnostics();
     runtime_shutdown();
+    if (diag_exit) return diag_exit;
     return save_ok ? 0 : 1;
 }
 

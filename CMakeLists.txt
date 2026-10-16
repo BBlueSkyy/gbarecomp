@@ -372,11 +372,28 @@ option(GBARECOMP_ENABLE_MODS
     "Build the GBA mod package loader and trusted-plugin runtime"
     OFF)
 
+# Engine revision stamped into diagnostic replays (docs/DIAGNOSTIC_REPLAY.md)
+# so playback can say when a recording came from a different build. Release
+# scripts that build from a copied tree without .git pass it explicitly.
+if(NOT DEFINED GBARECOMP_ENGINE_REVISION OR GBARECOMP_ENGINE_REVISION STREQUAL "")
+    execute_process(
+        COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short=12 HEAD
+        OUTPUT_VARIABLE _gbarecomp_engine_rev
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _gbarecomp_engine_rev_result)
+    if(NOT _gbarecomp_engine_rev_result EQUAL 0 OR _gbarecomp_engine_rev STREQUAL "")
+        set(_gbarecomp_engine_rev "unknown")
+    endif()
+    set(GBARECOMP_ENGINE_REVISION "${_gbarecomp_engine_rev}" CACHE STRING
+        "Engine revision recorded in diagnostic replays")
+endif()
 add_library(gbarecomp_runtime STATIC
     src/runtime/multiplayer_config.cpp
     src/runtime/multiplayer_session.cpp
     src/runtime/multiplayer_slice.cpp
     src/runtime/runtime.cpp
+    src/runtime/diagnostic_replay.cpp
     src/runtime/save_config.cpp
     src/runtime/bios_hle.cpp
     src/runtime/generated_dispatch.cpp
@@ -536,6 +553,7 @@ add_library(gbarecomp_debug STATIC
     src/debug/trace_ring.cpp
     src/debug/file_replace.cpp
     src/debug/snapshot.cpp
+    src/debug/replay_writer.cpp
     src/debug/mod_state.cpp
     src/debug/ws_provenance.cpp
     src/debug/ws_sidecar.cpp
@@ -549,6 +567,9 @@ target_include_directories(gbarecomp_debug PUBLIC src/debug)
 target_include_directories(gbarecomp_debug PRIVATE src/runtime)
 target_link_libraries(gbarecomp_debug PUBLIC gbarecomp_gba)
 set_property(TARGET gbarecomp_debug PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(SOURCE src/runtime/diagnostic_replay.cpp
+    TARGET_DIRECTORY gbarecomp_runtime APPEND PROPERTY
+    COMPILE_DEFINITIONS "GBARECOMP_ENGINE_REVISION=\"${GBARECOMP_ENGINE_REVISION}\"")
 if(WIN32 OR MSYS)
     target_link_libraries(gbarecomp_debug PUBLIC ws2_32)
 endif()
@@ -920,6 +941,17 @@ target_include_directories(diagnostic_capture_tests PRIVATE src/gba src/runtime 
 target_link_libraries(diagnostic_capture_tests PRIVATE gbarecomp_gba)
 add_test(NAME diagnostic_capture_tests_disabled COMMAND diagnostic_capture_tests --disabled)
 add_test(NAME diagnostic_capture_tests_enabled COMMAND diagnostic_capture_tests --enabled)
+
+# Diagnostic replay capture/playback (docs/DIAGNOSTIC_REPLAY.md) against a
+# synthetic deterministic machine, plus the bounded background writer.
+add_executable(diagnostic_replay_tests
+    tests/runtime/diagnostic_replay_test.cpp
+    src/runtime/diagnostic_replay.cpp
+    src/debug/replay_writer.cpp)
+target_include_directories(diagnostic_replay_tests PRIVATE src/runtime src/debug)
+find_package(Threads REQUIRED)
+target_link_libraries(diagnostic_replay_tests PRIVATE Threads::Threads)
+add_test(NAME diagnostic_replay_tests COMMAND diagnostic_replay_tests)
 
 # Self-heal proposal clustering — pure logic, links only the standalone
 # clustering TU (no runtime/bus/overlay dependencies).

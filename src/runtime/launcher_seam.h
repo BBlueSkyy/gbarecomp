@@ -649,6 +649,7 @@ inline int gbarecomp_launcher_preboot(std::vector<std::string>& args,
             if (i > 0 && (s == "--tcp" || s == "--steps" || s == "--frames" ||
                           s == "--no-window" || s == "--dump-bmp" ||
                           s == "--dump-png" || s == "--load-state" ||
+                          s == "--replay-diagnostic" ||
                           s == "--rom" || s == "--help" || s == "-h"))
                 headless = true;
             filtered.push_back(s);

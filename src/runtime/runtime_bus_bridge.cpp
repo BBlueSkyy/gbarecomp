@@ -949,6 +949,14 @@ std::function<bool()> g_frame_present_hook;
 // unwind (return true) so the guest's whole host call stack pops back to the
 // runner — one return only frees one frame. Cleared when a hook is (re)set.
 bool g_frame_present_quit = false;
+// One-shot (non-sticky) unwind requested from inside the hook: the guest pops
+// back to the runner once and the runner redispatches the published PC.
+// Diagnostic replay playback uses it after restoring its first checkpoint so
+// the restored machine never resumes inside an unrelated host call chain.
+bool g_frame_present_unwind = false;
+// True only while the present hook runs: an unwind request made anywhere else
+// (the runner loop, where the guest is already unwound) has nothing to do.
+bool g_in_frame_present_hook = false;
 
 // Present-in-place deliberately preserves the generated host call chain across
 // frames, but some guest script engines keep a call active for thousands of
@@ -974,6 +982,11 @@ uint32_t present_in_place_call_depth_limit() {
 void runtime_set_frame_present_hook(std::function<bool()> h) {
     g_frame_present_hook = std::move(h);
     g_frame_present_quit = false;
+    g_frame_present_unwind = false;
+}
+
+void runtime_request_present_unwind() {
+    if (g_in_frame_present_hook) g_frame_present_unwind = true;
 }
 
 void runtime_set_host_service_hook(std::function<void()> h) {
@@ -1062,9 +1075,15 @@ extern "C" bool runtime_should_yield(void) {
             // dispatch-miss. Only unwind (return true) when the hook asks to
             // quit. With no hook (headless/TCP), keep the original unwind path.
             if (g_frame_present_hook) {
+                g_in_frame_present_hook = true;
                 bool quit = g_frame_present_hook();
+                g_in_frame_present_hook = false;
                 if (quit) {
                     g_frame_present_quit = true;  // sticky: full unwind
+                    return true;
+                }
+                if (g_frame_present_unwind) {
+                    g_frame_present_unwind = false;
                     return true;
                 }
                 const uint32_t call_depth = runtime_call_stack_depth();
@@ -1145,6 +1164,13 @@ void runtime_capture_timing_context(RuntimeTimingContext& out) {
     out.yielded_vblank = g_runtime_yielded_vblank_start;
     out.pending_cycles = g_pending_cycles;
     out.event_budget = g_event_budget;
+}
+void runtime_restore_timing_values(const RuntimeTimingContext& in) {
+    g_runtime_cycles = in.cycles;
+    g_runtime_vblank_starts = in.vblank_starts;
+    g_runtime_yielded_vblank_start = in.yielded_vblank;
+    g_pending_cycles = in.pending_cycles;
+    g_event_budget = in.event_budget;
 }
 void runtime_restore_timing_context(const RuntimeTimingContext& in) {
     g_runtime_cycles = in.cycles;
