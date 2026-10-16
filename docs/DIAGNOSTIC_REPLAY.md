@@ -49,6 +49,11 @@ python tools/replay_diagnostic.py replay <first .replay> \
 3. It rebuilds the recorded command line.
 4. It runs the session headless (or windowed with `--window`).
 
+Playback shares the build's `recomp_cache`. The first replay of a report
+compiles any self-healed functions the player's session ran natively. That takes
+about a second each and needs the build's compiler; later replays reuse the
+cache.
+
 Exit status:
 
 | Status | Meaning |

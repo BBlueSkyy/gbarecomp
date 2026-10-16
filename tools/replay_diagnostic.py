@@ -200,6 +200,9 @@ def cmd_replay(args):
     env["GBARECOMP_DIAGNOSTICS"] = "0"
     env["GBARECOMP_NO_LAUNCHER"] = "1"
     env["GBARECOMP_DIAGNOSTICS_DIR"] = str(work)
+    # Share the build's self-heal cache (keyed by ROM and code CRC): playback
+    # makes the recorded native set active and only compiles what is missing.
+    env.setdefault("GBARECOMP_HEAL_CACHE", str(exe.parent / "recomp_cache"))
     if args.dump_frames:
         env["GBARECOMP_DIAGNOSTICS_DUMP_FRAMES"] = args.dump_frames
     print("Command:", " ".join(command), flush=True)
