@@ -2,6 +2,7 @@
 
 #include "overlay_loader.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -113,6 +114,11 @@ std::atomic<bool>           s_stop{false};
 std::mutex                  s_ready_mtx;
 std::deque<ReadyEntry>      s_ready;
 std::atomic<int>            s_ready_pending{0};
+
+// Diagnostic replay adoption (see overlay_loader.h). Game-thread-only.
+OverlayAdoptionMode                          s_adoption = OverlayAdoptionMode::Immediate;
+std::unordered_map<uint64_t, OverlayCompiled> s_parked_results;  // Boundary
+std::unordered_map<uint64_t, HealedEntry>     s_pool;            // Replay
 
 // The cache subdir a given backend writes to / is scanned from:
 //   recomp_cache/<image_sha1>/<gcc|tcc>/<os-arch>/<pc>_<crc>_<a|t>.dll
@@ -555,6 +561,9 @@ bool overlay_request_compile(uint32_t pc, bool thumb) {
     // worker thread; the game thread keeps interpreting this PC until the shard
     // is installed at a frame boundary (overlay_drain_ready). First hit
     // enqueues — it does not compile.
+    // Replay adopts only what the recording adopted, at the recorded frame
+    // boundaries; it never starts background work of its own.
+    if (s_adoption == OverlayAdoptionMode::Replay) return false;
     s_inflight.insert(key);
     {
         std::lock_guard<std::mutex> lk(s_work_mtx);
@@ -577,7 +586,11 @@ void overlay_drain_ready() {
         if (r.ok) {
             // Game-thread install: publish the worker-produced code into the
             // dispatch map. This validates + installs only — it never compiles.
-            install_healed(r.key, r.c);
+            // A capture defers the install to the next frame boundary.
+            if (s_adoption == OverlayAdoptionMode::Boundary)
+                s_parked_results[r.key] = r.c;
+            else
+                install_healed(r.key, r.c);
         } else {
             s_failed.insert(r.key);
         }
@@ -604,6 +617,82 @@ void overlay_counters(uint64_t* healed_native, uint64_t* native_calls_total,
     if (native_calls_total) *native_calls_total = s_native_calls_total;
     if (inflight)           *inflight           = s_inflight.size();
     if (failed)             *failed             = s_failed.size();
+}
+
+void overlay_set_adoption_mode(OverlayAdoptionMode mode) {
+    if (s_adoption == OverlayAdoptionMode::Boundary && mode != s_adoption)
+        overlay_adopt_parked();
+    s_adoption = mode;
+}
+
+std::vector<uint64_t> overlay_adopt_parked() {
+    std::vector<uint64_t> keys;
+    for (const auto& [key, c] : s_parked_results) {
+        install_healed(key, c);
+        keys.push_back(key);
+    }
+    s_parked_results.clear();
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+std::vector<uint64_t> overlay_active_keys() {
+    std::vector<uint64_t> keys;
+    keys.reserve(g_healed.size());
+    for (const auto& [key, e] : g_healed) keys.push_back(key);
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+bool overlay_replay_set_active(const std::vector<uint64_t>& keys, std::string* err) {
+    std::unordered_set<uint64_t> want(keys.begin(), keys.end());
+    for (auto it = g_healed.begin(); it != g_healed.end();) {
+        if (want.count(it->first)) { ++it; continue; }
+        s_pool[it->first] = it->second;
+        it = g_healed.erase(it);
+    }
+    std::string missing;
+    for (const uint64_t key : keys) {
+        if (g_healed.count(key)) continue;
+        if (auto pooled = s_pool.find(key); pooled != s_pool.end()) {
+            g_healed[key] = pooled->second;
+            s_pool.erase(pooled);
+            continue;
+        }
+        // Not cached here: compile it now (playback may stall; it is offline).
+        OverlayWorkItem w;
+        w.pc = static_cast<uint32_t>(key >> 1);
+        w.thumb = (key & 1u) != 0;
+        bool have = s_active && region_bytes(w.pc, &w.bytes, &w.size, &w.base);
+        if (!have && s_active) {
+            if (gba::GbaBus* bus = active_bus()) {
+                const bool iw = w.pc >= 0x03000000u && w.pc < 0x03008000u;
+                const bool ew = w.pc >= 0x02000000u && w.pc < 0x02040000u;
+                if (iw || ew) {
+                    const uint8_t* src = iw ? bus->iwram_ptr() : bus->ewram_ptr();
+                    w.size = iw ? 32u * 1024u : 256u * 1024u;
+                    w.base = iw ? 0x03000000u : 0x02000000u;
+                    w.owned_bytes.assign(src, src + w.size);
+                    have = true;
+                }
+            }
+        }
+        OverlayCompiled c;
+        std::string why;
+        if (have && overlay_compile_one(w, s_active_cache_dir, &g_callbacks,
+                                        /*compile_if_missing=*/true, s_backend, &c, &why)) {
+            install_healed(key, c);
+            continue;
+        }
+        char item[48];
+        std::snprintf(item, sizeof(item), "%s0x%08X(%s)", missing.empty() ? "" : " ",
+                      w.pc, w.thumb ? "thumb" : "arm");
+        missing += item;
+    }
+    if (!missing.empty() && err)
+        *err = "cannot make native here: " + missing +
+               (s_active ? "" : " (self-heal recompile is disabled)");
+    return missing.empty();
 }
 
 bool overlay_enabled() { return s_active; }

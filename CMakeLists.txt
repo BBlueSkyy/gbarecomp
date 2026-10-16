@@ -372,22 +372,6 @@ option(GBARECOMP_ENABLE_MODS
     "Build the GBA mod package loader and trusted-plugin runtime"
     OFF)
 
-# Engine revision stamped into diagnostic replays (docs/DIAGNOSTIC_REPLAY.md)
-# so playback can say when a recording came from a different build. Release
-# scripts that build from a copied tree without .git pass it explicitly.
-if(NOT DEFINED GBARECOMP_ENGINE_REVISION OR GBARECOMP_ENGINE_REVISION STREQUAL "")
-    execute_process(
-        COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short=12 HEAD
-        OUTPUT_VARIABLE _gbarecomp_engine_rev
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE _gbarecomp_engine_rev_result)
-    if(NOT _gbarecomp_engine_rev_result EQUAL 0 OR _gbarecomp_engine_rev STREQUAL "")
-        set(_gbarecomp_engine_rev "unknown")
-    endif()
-    set(GBARECOMP_ENGINE_REVISION "${_gbarecomp_engine_rev}" CACHE STRING
-        "Engine revision recorded in diagnostic replays")
-endif()
 add_library(gbarecomp_runtime STATIC
     src/runtime/multiplayer_config.cpp
     src/runtime/multiplayer_session.cpp
@@ -567,9 +551,24 @@ target_include_directories(gbarecomp_debug PUBLIC src/debug)
 target_include_directories(gbarecomp_debug PRIVATE src/runtime)
 target_link_libraries(gbarecomp_debug PUBLIC gbarecomp_gba)
 set_property(TARGET gbarecomp_debug PROPERTY POSITION_INDEPENDENT_CODE ON)
-set_property(SOURCE src/runtime/diagnostic_replay.cpp
-    TARGET_DIRECTORY gbarecomp_runtime APPEND PROPERTY
-    COMPILE_DEFINITIONS "GBARECOMP_ENGINE_REVISION=\"${GBARECOMP_ENGINE_REVISION}\"")
+# Engine revision stamped into diagnostic replays (docs/DIAGNOSTIC_REPLAY.md),
+# regenerated every build so a replay always names the compiled engine.
+# Release scripts building from a copied tree without .git set
+# GBARECOMP_ENGINE_REVISION explicitly.
+set(GBARECOMP_ENGINE_REVISION "" CACHE STRING
+    "Override the engine revision recorded in diagnostic replays")
+set(GBARECOMP_REVISION_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/gbarecomp_generated/engine_revision.h")
+add_custom_target(gbarecomp_engine_revision ALL
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+        -DOUT=${GBARECOMP_REVISION_HEADER}
+        -DOVERRIDE=${GBARECOMP_ENGINE_REVISION}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/engine_revision.cmake
+    BYPRODUCTS ${GBARECOMP_REVISION_HEADER}
+    COMMENT "gbarecomp engine revision")
+add_dependencies(gbarecomp_runtime gbarecomp_engine_revision)
+target_include_directories(gbarecomp_runtime PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/gbarecomp_generated")
 if(WIN32 OR MSYS)
     target_link_libraries(gbarecomp_debug PUBLIC ws2_32)
 endif()

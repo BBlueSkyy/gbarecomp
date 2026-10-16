@@ -24,6 +24,8 @@
 //   SEGMENT <n> <unix time>
 //   S <offset> <size> <hash> <kind>   checkpoint in <file>.state
 //   T <scheduling context>            host timing at that checkpoint
+//   N <heal key>...                   complete self-healed native set
+//   O <heal key>...                   native code adopted at this boundary
 //                                      kind C = live continued in place,
 //                                           R = live restored this state
 //   I <frame> <keyinput> <gyro> <solar> <rtc> <w> <h> <l> <r> <t> <b> <site>
@@ -87,6 +89,17 @@ struct DiagnosticReplayHost {
     // Unwind the guest to the runner after this frame-boundary hook returns
     // and redispatch the published PC (playback's initial synchronization).
     std::function<void()> request_unwind;
+    // Self-heal adoption (which uncovered functions run natively instead of
+    // through the interpreter bridge) as space-separated hex keys. Optional:
+    // hosts without self-heal leave them empty.
+    //   capture:  heal_adopt() installs parked native code now and returns its
+    //             keys; heal_active() lists everything native; heal_release()
+    //             returns the loader to immediate adoption when capture ends.
+    //   playback: heal_set_active(keys) makes exactly that set native.
+    std::function<std::string()> heal_adopt;
+    std::function<std::string()> heal_active;
+    std::function<void()> heal_release;
+    std::function<bool(const std::string&, std::string&)> heal_set_active;
 };
 
 struct DiagnosticReplayConfig {

@@ -36,6 +36,11 @@
 #include <mach-o/dyld.h>
 #endif
 
+#if defined(__has_include)
+#if __has_include("engine_revision.h")
+#include "engine_revision.h"  // generated per build (cmake/engine_revision.cmake)
+#endif
+#endif
 #ifndef GBARECOMP_ENGINE_REVISION
 #define GBARECOMP_ENGINE_REVISION "unknown"
 #endif
@@ -121,6 +126,9 @@ struct DiagnosticReplay::Playback {
     std::vector<std::uint8_t> checkpoint;
     std::uint64_t last_checkpoint_frame = 0;
     std::string timing;
+    std::string heal_set;      // pending N/O keys for the next input record
+    bool heal_exact = false;   // N seen: replace rather than extend
+    bool heal_pending = false; // O seen
     unsigned last_checkpoint_segment = 0;
 
     ~Playback() { close(); }
@@ -194,6 +202,7 @@ void DiagnosticReplay::stop_recording(const char* why) {
     segment_open_ = false;
     pending_end_ = false;
     if (writer_) writer_->end();
+    if (host_.heal_release) host_.heal_release();
 }
 
 void DiagnosticReplay::note_writer_failure() {
@@ -339,11 +348,24 @@ void DiagnosticReplay::frame_begin(char site) {
     const bool new_segment =
         !segment_open_ || rows_ >= kSegmentFrames ||
         (discontinuity && segment_state_bytes_ + snapshot_.size() > segment_limit);
+    // Native code finished compiling since the last boundary starts running
+    // here, at a point playback reproduces ("O"); every segment also lists
+    // the whole native set ("N") so it replays on its own.
+    const std::string adopted = host_.heal_adopt ? host_.heal_adopt() : std::string();
     if (new_segment) {
         if (!start_segment()) return;
         if (!write_checkpoint(discontinuity ? 'R' : 'C')) return;
-    } else if (discontinuity) {
-        if (!write_checkpoint('R')) return;
+        if (host_.heal_active &&
+            !writer_->line("N " + host_.heal_active() + "\n")) {
+            note_writer_failure();
+            return;
+        }
+    } else {
+        if (discontinuity && !write_checkpoint('R')) return;
+        if (!adopted.empty() && !writer_->line("O " + adopted + "\n")) {
+            note_writer_failure();
+            return;
+        }
     }
     epoch_ = epoch;
     DiagnosticFrameInput in;
@@ -600,6 +622,16 @@ void DiagnosticReplay::playback_begin(char site) {
             p.timing = line.size() > 2 ? line.substr(2) : std::string();
             continue;
         }
+        if (line[0] == 'N') {  // the complete native set at this boundary
+            p.heal_set = line.size() > 2 ? line.substr(2) : std::string();
+            p.heal_exact = true;
+            continue;
+        }
+        if (line[0] == 'O') {  // native code adopted at this boundary
+            p.heal_set += " " + (line.size() > 2 ? line.substr(2) : std::string());
+            p.heal_pending = true;
+            continue;
+        }
         if (line[0] != 'I') { fail_playback("unexpected record: " + line); return; }
         std::uint64_t frame = 0;
         DiagnosticFrameInput in;
@@ -656,6 +688,18 @@ void DiagnosticReplay::playback_begin(char site) {
                           " does not begin with a machine checkpoint");
             return;
         }
+        if ((p.heal_exact || p.heal_pending) && host_.heal_set_active) {
+            // N replaces the native set; O adds to the current one.
+            const std::string keys = p.heal_exact
+                ? p.heal_set
+                : (host_.heal_active ? host_.heal_active() : std::string()) + p.heal_set;
+            std::string e;
+            if (!host_.heal_set_active(keys, e))
+                std::fprintf(stderr, "[gbarecomp:diagnostics] WARNING: %s; native-code "
+                                     "coverage differs from the recording\n", e.c_str());
+        }
+        p.heal_set.clear();
+        p.heal_exact = p.heal_pending = false;
         if (frame != host_.frame()) {
             fail_playback("FIRST DIVERGENCE: recorded input for frame " +
                           std::to_string(frame) + " but the machine reached frame " +

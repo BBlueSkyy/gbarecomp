@@ -4018,6 +4018,41 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         apply_runtime_view_geometry(geometry);
     };
     diag_host.request_unwind = []() { runtime_request_present_unwind(); };
+    auto format_heal_keys = [](const std::vector<uint64_t>& keys) {
+        std::string text;
+        char item[24];
+        for (const uint64_t key : keys) {
+            std::snprintf(item, sizeof(item), "%s%llx", text.empty() ? "" : " ",
+                          static_cast<unsigned long long>(key));
+            text += item;
+        }
+        return text;
+    };
+    diag_host.heal_adopt = [format_heal_keys]() {
+        return format_heal_keys(gbarecomp::overlay_adopt_parked());
+    };
+    diag_host.heal_active = [format_heal_keys]() {
+        return format_heal_keys(gbarecomp::overlay_active_keys());
+    };
+    diag_host.heal_release = []() {
+        gbarecomp::overlay_set_adoption_mode(gbarecomp::OverlayAdoptionMode::Immediate);
+    };
+    diag_host.heal_set_active = [](const std::string& text, std::string& e) {
+        std::vector<uint64_t> keys;
+        const char* cursor = text.c_str();
+        while (*cursor) {
+            char* end = nullptr;
+            const unsigned long long key = std::strtoull(cursor, &end, 16);
+            if (end == cursor) {
+                if (*cursor == ' ') { ++cursor; continue; }
+                e = "invalid native-set record";
+                return false;
+            }
+            keys.push_back(static_cast<uint64_t>(key));
+            cursor = end;
+        }
+        return gbarecomp::overlay_replay_set_active(keys, &e);
+    };
     if (!args.replay_diagnostic.empty()) {
         if (!present_in_place || args.tcp_port > 0) {
             std::fprintf(stderr, "[gbarecomp:diagnostics] --replay-diagnostic needs "
@@ -4031,6 +4066,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             runtime_shutdown();
             return 2;
         }
+        gbarecomp::overlay_set_adoption_mode(gbarecomp::OverlayAdoptionMode::Replay);
     } else {
         bool want = diagnostic_replay_setting(
             (diag_exe_dir / "config.ini").string(), opts.diagnostic_replay_default);
@@ -4043,7 +4079,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         }
         if (want && args.window && args.tcp_port <= 0) {
             if (present_in_place)
-                diag.start_recording(diag_config, diag_host);
+                if (diag.start_recording(diag_config, diag_host))
+                    gbarecomp::overlay_set_adoption_mode(
+                        gbarecomp::OverlayAdoptionMode::Boundary);
             else
                 std::fprintf(stderr, "[gbarecomp:diagnostics] replay capture needs "
                                      "present-in-place; not recording\n");

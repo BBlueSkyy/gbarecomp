@@ -194,6 +194,14 @@ Color conversion is a 32,768-entry lookup applied only to the copy uploaded for
 display. It never changes emulated VRAM, the PPU framebuffer used for
 verification, or the faithful Raw output.
 
+## Diagnostic replays
+
+Windowed play records a bounded, background-written diagnostic replay (up to
+an hour of inputs, checkpoints and per-frame state fingerprints) beside the
+executable. A player's bug report becomes an exact offline reproduction that
+stops at the first divergent frame: `tools/replay_diagnostic.py`. Opt out with
+`GBARECOMP_DIAGNOSTICS=0`. See [docs/DIAGNOSTIC_REPLAY.md](docs/DIAGNOSTIC_REPLAY.md).
+
 ## Development showcase
 
 <table>
