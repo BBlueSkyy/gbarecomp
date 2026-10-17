@@ -377,6 +377,7 @@ add_library(gbarecomp_runtime STATIC
     src/runtime/multiplayer_session.cpp
     src/runtime/multiplayer_slice.cpp
     src/runtime/runtime.cpp
+    src/runtime/diagnostic_replay.cpp
     src/runtime/save_config.cpp
     src/runtime/bios_hle.cpp
     src/runtime/generated_dispatch.cpp
@@ -536,6 +537,7 @@ add_library(gbarecomp_debug STATIC
     src/debug/trace_ring.cpp
     src/debug/file_replace.cpp
     src/debug/snapshot.cpp
+    src/debug/replay_writer.cpp
     src/debug/mod_state.cpp
     src/debug/ws_provenance.cpp
     src/debug/ws_sidecar.cpp
@@ -549,6 +551,24 @@ target_include_directories(gbarecomp_debug PUBLIC src/debug)
 target_include_directories(gbarecomp_debug PRIVATE src/runtime)
 target_link_libraries(gbarecomp_debug PUBLIC gbarecomp_gba)
 set_property(TARGET gbarecomp_debug PROPERTY POSITION_INDEPENDENT_CODE ON)
+# Engine revision stamped into diagnostic replays (docs/DIAGNOSTIC_REPLAY.md),
+# regenerated every build so a replay always names the compiled engine.
+# Release scripts building from a copied tree without .git set
+# GBARECOMP_ENGINE_REVISION explicitly.
+set(GBARECOMP_ENGINE_REVISION "" CACHE STRING
+    "Override the engine revision recorded in diagnostic replays")
+set(GBARECOMP_REVISION_HEADER
+    "${CMAKE_CURRENT_BINARY_DIR}/gbarecomp_generated/engine_revision.h")
+add_custom_target(gbarecomp_engine_revision ALL
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+        -DOUT=${GBARECOMP_REVISION_HEADER}
+        -DOVERRIDE=${GBARECOMP_ENGINE_REVISION}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/engine_revision.cmake
+    BYPRODUCTS ${GBARECOMP_REVISION_HEADER}
+    COMMENT "gbarecomp engine revision")
+add_dependencies(gbarecomp_runtime gbarecomp_engine_revision)
+target_include_directories(gbarecomp_runtime PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/gbarecomp_generated")
 if(WIN32 OR MSYS)
     target_link_libraries(gbarecomp_debug PUBLIC ws2_32)
 endif()
@@ -920,6 +940,17 @@ target_include_directories(diagnostic_capture_tests PRIVATE src/gba src/runtime 
 target_link_libraries(diagnostic_capture_tests PRIVATE gbarecomp_gba)
 add_test(NAME diagnostic_capture_tests_disabled COMMAND diagnostic_capture_tests --disabled)
 add_test(NAME diagnostic_capture_tests_enabled COMMAND diagnostic_capture_tests --enabled)
+
+# Diagnostic replay capture/playback (docs/DIAGNOSTIC_REPLAY.md) against a
+# synthetic deterministic machine, plus the bounded background writer.
+add_executable(diagnostic_replay_tests
+    tests/runtime/diagnostic_replay_test.cpp
+    src/runtime/diagnostic_replay.cpp
+    src/debug/replay_writer.cpp)
+target_include_directories(diagnostic_replay_tests PRIVATE src/runtime src/debug)
+find_package(Threads REQUIRED)
+target_link_libraries(diagnostic_replay_tests PRIVATE Threads::Threads)
+add_test(NAME diagnostic_replay_tests COMMAND diagnostic_replay_tests)
 
 # Self-heal proposal clustering — pure logic, links only the standalone
 # clustering TU (no runtime/bus/overlay dependencies).

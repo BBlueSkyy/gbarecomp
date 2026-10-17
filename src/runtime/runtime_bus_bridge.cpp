@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -949,6 +951,14 @@ std::function<bool()> g_frame_present_hook;
 // unwind (return true) so the guest's whole host call stack pops back to the
 // runner — one return only frees one frame. Cleared when a hook is (re)set.
 bool g_frame_present_quit = false;
+// One-shot (non-sticky) unwind requested from inside the hook: the guest pops
+// back to the runner once and the runner redispatches the published PC.
+// Diagnostic replay playback uses it after restoring its first checkpoint so
+// the restored machine never resumes inside an unrelated host call chain.
+bool g_frame_present_unwind = false;
+// True only while the present hook runs: an unwind request made anywhere else
+// (the runner loop, where the guest is already unwound) has nothing to do.
+bool g_in_frame_present_hook = false;
 
 // Present-in-place deliberately preserves the generated host call chain across
 // frames, but some guest script engines keep a call active for thousands of
@@ -971,9 +981,46 @@ uint32_t present_in_place_call_depth_limit() {
     return limit;
 }
 
+// Present-in-place keeps the host call chain alive across frames, and the
+// guest call-return depth above does not bound it: non-returning indirect
+// transfers (BX/LDR PC chains through runtime_dispatch) nest host frames that
+// never appear on the guest call stack. Measure the real host stack instead
+// and unwind at a completed VBlank once it passes this budget. The runner
+// redispatches the published PC, so guest execution is unchanged.
+constexpr std::size_t kPresentInPlaceStackBudget = 1024u * 1024u;
+std::uintptr_t g_present_stack_base = 0;
+
+std::size_t present_in_place_stack_budget() {
+    static const std::size_t budget = [] {
+        const char* value = std::getenv("GBARECOMP_PRESENT_IN_PLACE_STACK_KB");
+        if (!value || value[0] == '\0') return kPresentInPlaceStackBudget;
+        const unsigned long kb = std::strtoul(value, nullptr, 0);
+        return kb >= 64u && kb <= 64u * 1024u ? static_cast<std::size_t>(kb) * 1024u
+                                              : kPresentInPlaceStackBudget;
+    }();
+    return budget;
+}
+
+std::size_t present_in_place_stack_used() {
+    if (!g_present_stack_base) return 0;
+    volatile char here = 0;
+    const auto at = reinterpret_cast<std::uintptr_t>(&here);
+    return g_present_stack_base > at ? g_present_stack_base - at : 0;
+}
+
+void runtime_mark_present_stack_base() {
+    volatile char here = 0;
+    g_present_stack_base = reinterpret_cast<std::uintptr_t>(&here);
+}
+
 void runtime_set_frame_present_hook(std::function<bool()> h) {
     g_frame_present_hook = std::move(h);
     g_frame_present_quit = false;
+    g_frame_present_unwind = false;
+}
+
+void runtime_request_present_unwind() {
+    if (g_in_frame_present_hook) g_frame_present_unwind = true;
 }
 
 void runtime_set_host_service_hook(std::function<void()> h) {
@@ -1062,9 +1109,15 @@ extern "C" bool runtime_should_yield(void) {
             // dispatch-miss. Only unwind (return true) when the hook asks to
             // quit. With no hook (headless/TCP), keep the original unwind path.
             if (g_frame_present_hook) {
+                g_in_frame_present_hook = true;
                 bool quit = g_frame_present_hook();
+                g_in_frame_present_hook = false;
                 if (quit) {
                     g_frame_present_quit = true;  // sticky: full unwind
+                    return true;
+                }
+                if (g_frame_present_unwind) {
+                    g_frame_present_unwind = false;
                     return true;
                 }
                 const uint32_t call_depth = runtime_call_stack_depth();
@@ -1081,6 +1134,20 @@ extern "C" bool runtime_should_yield(void) {
                             "depth=%u limit=%u count=%llu pc=0x%08X\n",
                             call_depth, call_depth_limit, forced_unwinds,
                             g_cpu.R[15]);
+                    }
+                    return true;
+                }
+                const std::size_t stack_used = present_in_place_stack_used();
+                if (stack_used >= present_in_place_stack_budget()) {
+                    static unsigned long long stack_unwinds = 0;
+                    ++stack_unwinds;
+                    if ((stack_unwinds & (stack_unwinds - 1u)) == 0u) {
+                        std::fprintf(stderr,
+                            "runtime: present-in-place host-stack unwind "
+                            "used=%zu budget=%zu guest_depth=%u count=%llu "
+                            "pc=0x%08X\n",
+                            stack_used, present_in_place_stack_budget(),
+                            call_depth, stack_unwinds, g_cpu.R[15]);
                     }
                     return true;
                 }
@@ -1145,6 +1212,13 @@ void runtime_capture_timing_context(RuntimeTimingContext& out) {
     out.yielded_vblank = g_runtime_yielded_vblank_start;
     out.pending_cycles = g_pending_cycles;
     out.event_budget = g_event_budget;
+}
+void runtime_restore_timing_values(const RuntimeTimingContext& in) {
+    g_runtime_cycles = in.cycles;
+    g_runtime_vblank_starts = in.vblank_starts;
+    g_runtime_yielded_vblank_start = in.yielded_vblank;
+    g_pending_cycles = in.pending_cycles;
+    g_event_budget = in.event_budget;
 }
 void runtime_restore_timing_context(const RuntimeTimingContext& in) {
     g_runtime_cycles = in.cycles;

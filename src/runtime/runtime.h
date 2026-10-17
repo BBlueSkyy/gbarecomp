@@ -122,6 +122,10 @@ struct RunOptions {
     // reusable. Slot hotkeys continue to cover 1-9, while menus can reach 10.
     bool expose_assist_tools = false;
     bool assist_tools_enabled_by_default = true;
+    // Always-on diagnostic replay capture for interactive windowed sessions
+    // (docs/DIAGNOSTIC_REPLAY.md). Players opt out with GBARECOMP_DIAGNOSTICS=0
+    // or config.ini [Diagnostics] replay_capture=0; a title may default it off.
+    bool diagnostic_replay_default = true;
     std::uint8_t assist_fast_forward_multiplier_default = 4;
     std::uint8_t save_state_slot_count = 9;
     std::uint8_t rewind_history_seconds = 0;

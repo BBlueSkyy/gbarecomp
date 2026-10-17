@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -796,6 +797,42 @@ void dispatch(const TcpDebugServer::Context& ctx, std::string_view req,
     if (contains("\"read_iwram\"")) {
         if (!ctx.bus) { emit_error(out, "bus unavailable"); return; }
         cmd_read_region(ctx.bus->iwram_ptr(), 32 * 1024, req, out, 0x03000000u);
+        return;
+    }
+    // Debug/validation poke: {"cmd":"write_mem","addr":A,"hex":"0a0b.."}
+    // writes raw bytes into EWRAM/IWRAM/palette/VRAM/OAM backing memory (no
+    // bus side effects). For cheat-assisted coverage runs, never gameplay.
+    if (contains("\"write_mem\"")) {
+        if (!ctx.bus) { emit_error(out, "bus unavailable"); return; }
+        uint64_t addr = 0;
+        std::string hex;
+        if (!extract_uint(req, "\"addr\"", addr) || !extract_string(req, "\"hex\"", hex) ||
+            hex.empty() || (hex.size() & 1u)) {
+            emit_error(out, "missing addr/hex");
+            return;
+        }
+        struct Region { uint32_t base; uint8_t* ptr; std::size_t size; };
+        const Region regions[] = {
+            {0x02000000u, ctx.bus->ewram_ptr(), 256u * 1024u},
+            {0x03000000u, ctx.bus->iwram_ptr(), 32u * 1024u},
+            {0x05000000u, ctx.bus->pal_ptr(), 1024u},
+            {0x06000000u, ctx.bus->vram_ptr(), 96u * 1024u},
+            {0x07000000u, ctx.bus->oam_ptr(), 1024u},
+        };
+        const std::size_t len = hex.size() / 2;
+        for (const Region& r : regions) {
+            if (addr < r.base || addr + len > r.base + r.size) continue;
+            for (std::size_t i = 0; i < len; ++i) {
+                const unsigned long v = std::strtoul(hex.substr(i * 2, 2).c_str(), nullptr, 16);
+                r.ptr[addr - r.base + i] = static_cast<uint8_t>(v);
+            }
+            char ok[96];
+            std::snprintf(ok, sizeof(ok), "{\"ok\":true,\"addr\":%llu,\"len\":%zu}",
+                          static_cast<unsigned long long>(addr), len);
+            out = ok;
+            return;
+        }
+        emit_error(out, "address range is not RAM/palette/VRAM/OAM");
         return;
     }
     if (contains("\"read_ewram\"")) {

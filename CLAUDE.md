@@ -167,6 +167,15 @@ Never:
 
 ---
 
+# PLAYER BUG REPORTS
+
+Players' sessions record diagnostic replays by default. Reproduce a report
+with `tools/replay_diagnostic.py replay <first .replay> --exe ... --rom ...
+--bios ...` before theorizing: it stops at the first divergent frame or
+re-executes the frame that hung/crashed. See `docs/DIAGNOSTIC_REPLAY.md`.
+
+---
+
 # TCP
 
 Default native port: 19842. Oracle (mGBA bridge) on the next port.
