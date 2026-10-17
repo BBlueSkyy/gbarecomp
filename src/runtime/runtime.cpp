@@ -3906,32 +3906,38 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     uint64_t save_last_change_frame = ppu.frame_count();
     uint64_t save_dirty_since_frame = ppu.frame_count();
     bool save_pending = false;
-    // Desktop autosave crash guard. Windowed sessions only, so headless
-    // verification runs (regression, verify, boot smokes) never touch the
-    // suspend files. It reuses the suspend state + marker the resume path
-    // understands: a clean exit clears the marker, an unclean exit leaves it,
-    // and the next launch resumes from the last snapshot.
+    // Desktop autosave crash guard (RunOptions::autosave_interval_seconds).
+    // It feeds the existing suspend state + marker that
+    // resume_suspend_state_on_launch already understands: a clean exit clears
+    // the marker, an unclean exit leaves it, and the next launch resumes from
+    // the last snapshot. Interactive windowed play only: headless, --tcp,
+    // --load-state, input-replay and diagnostic-replay sessions never touch the
+    // suspend files, and a game without resume never pays for snapshots
+    // nobody reads.
     const bool autosave_on =
-        opts.autosave_interval_seconds > 0 && args.window &&
-        args.load_state.empty();
+        opts.autosave_interval_seconds > 0 &&
+        opts.resume_suspend_state_on_launch && args.window &&
+        args.tcp_port <= 0 && args.load_state.empty() &&
+        !input_replay_requested && args.replay_diagnostic.empty();
     const uint64_t autosave_interval_frames = autosave_on
         ? static_cast<uint64_t>(opts.autosave_interval_seconds) * 60u : 0;
     uint64_t next_autosave_frame = ppu.frame_count() + autosave_interval_frames;
-    auto autosave_tick = [&](uint64_t frame) {
-        if (!autosave_on || frame < next_autosave_frame) return;
-        std::filesystem::path state_path(args.rom);
-        state_path.replace_extension(".suspend.state");
-        std::filesystem::path marker_path(args.rom);
-        marker_path.replace_extension(".suspend.pending");
+    bool autosave_failure_logged = false;
+    auto autosave_now = [&](uint64_t frame) {
         std::string e;
-        if (do_savestate_save(state_path.string(), e)) {
-            std::ofstream marker(marker_path.string(), std::ios::trunc);
+        if (do_savestate_save(suspend_state_path(), e)) {
+            std::ofstream marker(suspend_marker_path(), std::ios::trunc);
             marker << frame << "\n";
+            autosave_failure_logged = false;
+        } else if (!autosave_failure_logged) {
+            std::fprintf(stderr, "[gbarecomp:runtime] autosave FAILED: %s\n",
+                         e.c_str());
+            autosave_failure_logged = true;
         }
         next_autosave_frame = frame + autosave_interval_frames;
     };
     auto maybe_flush_battery = [&](uint64_t frame) {
-        autosave_tick(frame);
+        if (autosave_on && frame >= next_autosave_frame) autosave_now(frame);
         if (!bus.save().dirty()) {
             save_pending = false;
             return;
@@ -3951,6 +3957,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             flush_save_notify();
             save_last_change_frame = frame;
             save_dirty_since_frame = frame;
+            // A resumed snapshot restores its own save RAM, which the next
+            // flush writes back to disk. Refresh the snapshot with every
+            // battery flush so resuming can never roll back a newer save.
+            if (autosave_on) autosave_now(frame);
         }
     };
 #if defined(GBARECOMP_WEB_HOST)
