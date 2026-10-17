@@ -70,6 +70,7 @@ size_t activation_stream_pull(void*, int16_t* dst, size_t max_frames) {
 
 void activate_view() {
     g_active = true;
+    (void)gba_mod_set_diagnostic_replay_enabled(1);
     (void)gba_mod_set_adaptive_view_enabled(1);
     (void)gba_mod_set_view_width(569);
     g_stream = gba_mod_audio_stream_register_s16_mono(
@@ -90,6 +91,16 @@ bool write_text(const fs::path& path, const std::string& text) {
 }  // namespace
 
 int main() {
+    if (gba_mod_diagnostic_replay_enabled() != -1 ||
+        !gba_mod_set_diagnostic_replay_enabled(1) ||
+        gba_mod_diagnostic_replay_enabled() != 1 ||
+        gba_mod_set_diagnostic_replay_enabled(-1) ||
+        gba_mod_set_diagnostic_replay_enabled(2) ||
+        gba_mod_diagnostic_replay_enabled() != 1 ||
+        !gba_mod_set_diagnostic_replay_enabled(0) ||
+        gba_mod_diagnostic_replay_enabled() != 0) {
+        return fail("diagnostic replay request did not preserve unset/boolean semantics");
+    }
     // The low-level registry is always available, independent of the package
     // catalog. Registration is inert, decline falls through, and a handler
     // owns the callback-authored CPU state.
@@ -375,7 +386,8 @@ int main() {
         return fail("unrelated-feature plan failed: " + error);
     }
     gbarecomp::mod_runtime_activate_plugins();
-    if (g_active || gba_mod_adaptive_view_enabled() ||
+    if (g_active || gba_mod_diagnostic_replay_enabled() != -1 ||
+        gba_mod_adaptive_view_enabled() ||
         gba_mod_required_asset_path("test.adaptive-view", "zelda1-rom"))
         return fail("unrelated feature required or exposed a foreign asset");
 
@@ -393,7 +405,8 @@ int main() {
         return fail("enabled asset plan failed: " + error);
     }
     gbarecomp::mod_runtime_activate_plugins();
-    if (!g_active || !gba_mod_adaptive_view_enabled() ||
+    if (!g_active || gba_mod_diagnostic_replay_enabled() != 1 ||
+        !gba_mod_adaptive_view_enabled() ||
         !g_stream_registered_during_activation || !g_stream_reregistered_in_place)
         return fail("enabled plugin did not activate");
     const char* aspect = gba_mod_option_value("test.adaptive-view", "adaptive-view", "aspect");
@@ -639,7 +652,8 @@ int main() {
     if (!g_reset_saw_foreign_presentation_clear ||
         gba::foreign_presentation_internal::background() != nullptr ||
         gba::foreign_presentation_internal::obj_focus() != nullptr ||
-        g_active || gba_mod_adaptive_view_enabled() || gba_mod_view_width() ||
+        g_active || gba_mod_diagnostic_replay_enabled() != -1 ||
+        gba_mod_adaptive_view_enabled() || gba_mod_view_width() ||
         gba_mod_option_value("test.adaptive-view", "adaptive-view", "aspect"))
         return fail("disabled plugin did not restore native view");
     if (gba_mod_required_asset_path("test.adaptive-view", "zelda1-rom"))

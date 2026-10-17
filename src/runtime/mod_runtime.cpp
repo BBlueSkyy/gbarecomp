@@ -182,6 +182,7 @@ struct Runtime {
     std::string error;
     bool initialized = false;
     bool adaptive_view_enabled = false;
+    int diagnostic_replay_enabled = -1;
     int view_width = 0;
 };
 
@@ -2054,6 +2055,7 @@ void mod_runtime_activate_plugins() {
     Runtime& runtime = state();
     if (!runtime.initialized) return;
     runtime.adaptive_view_enabled = false;
+    runtime.diagnostic_replay_enabled = -1;
     runtime.view_width = 0;
     // Presentation belongs to the currently committed plugin set. Clear the
     // old immutable buffer before reset callbacks so disabling/recommitting a
@@ -2129,6 +2131,16 @@ extern "C" int gba_mod_set_adaptive_view_enabled(int enabled) {
 
 extern "C" int gba_mod_adaptive_view_enabled(void) {
     return gbarecomp::state().adaptive_view_enabled ? 1 : 0;
+}
+
+extern "C" int gba_mod_set_diagnostic_replay_enabled(int enabled) {
+    if (enabled != 0 && enabled != 1) return 0;
+    gbarecomp::state().diagnostic_replay_enabled = enabled;
+    return 1;
+}
+
+extern "C" int gba_mod_diagnostic_replay_enabled(void) {
+    return gbarecomp::state().diagnostic_replay_enabled;
 }
 
 extern "C" int gba_mod_set_view_width(int width) {
