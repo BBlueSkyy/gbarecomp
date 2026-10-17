@@ -108,6 +108,16 @@ feature = "adaptive-view"
 id = "example.adaptive-view"
 ```
 
+### Diagnostic replay capture
+
+A trusted diagnostic feature can call `gba_mod_set_diagnostic_replay_enabled(1)`
+when activated and set it to `0` in its reset callback. Each activation pass
+clears the request to `-1` (no catalog request), preserving the title and
+`config.ini` defaults for other games. A committed catalog request takes
+precedence over those defaults; an explicit `GBARECOMP_DIAGNOSTICS` environment
+override still wins. Capture eligibility checks, including the cheat exclusion,
+remain in effect. This controls recording only, never diagnostic playback.
+
 ### User-owned required assets
 
 An enabled package may require a separately dumped, user-owned file without

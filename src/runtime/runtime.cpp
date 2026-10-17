@@ -4070,6 +4070,10 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     } else {
         bool want = diagnostic_replay_setting(
             (diag_exe_dir / "config.ini").string(), opts.diagnostic_replay_default);
+#if defined(GBARECOMP_ENABLE_MODS)
+        if (mods_ready && gba_mod_diagnostic_replay_enabled() >= 0)
+            want = gba_mod_diagnostic_replay_enabled() != 0;
+#endif
         if (const char* e = std::getenv("GBARECOMP_DIAGNOSTICS"); e && *e)
             want = e[0] != '0';
         if (want && !cheats.empty()) {
