@@ -3974,7 +3974,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         out.push_back({"CPU", &g_cpu, sizeof(g_cpu)});
         out.push_back({"IO", bus.io().raw(), gba::GbaIo::kIoSize});
         out.push_back({"call-stack", runtime_call_stack_data(),
-                       runtime_call_stack_depth() * sizeof(uint32_t)});
+                       runtime_call_stack_depth() * sizeof(uint32_t), true});
         out.push_back({"VRAM", bus.vram_ptr(), 96u * 1024u});
         out.push_back({"palette", bus.pal_ptr(), 1024u});
         out.push_back({"OAM", bus.oam_ptr(), 1024u});

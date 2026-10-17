@@ -774,14 +774,26 @@ void DiagnosticReplay::playback_end() {
         return;
     }
     bool same = frame == host_.frame();
-    std::string detail;
+    std::string detail, advisory;
     for (std::size_t i = 0; i < regions.size(); ++i) {
         const bool match =
             debug::replay_hash(regions[i].data, regions[i].size) == expected[i];
-        same = same && match;
+        if (regions[i].advisory) {
+            if (!match) advisory += std::string(advisory.empty() ? "" : ",") + regions[i].name;
+        } else {
+            same = same && match;
+        }
         detail += std::string(" ") + regions[i].name + (match ? "=match" : "=DIFFERS");
     }
-    if (same) { ++matched_; return; }
+    if (same) {
+        ++matched_;
+        if (!advisory.empty() && ++advisory_mismatches_ <= 3)
+            std::fprintf(stderr,
+                         "[gbarecomp:diagnostics] note: frame %llu matches; host "
+                         "bookkeeping differs (%s), as expected after a resync\n",
+                         frame, advisory.c_str());
+        return;
+    }
     std::fprintf(stderr,
                  "[gbarecomp:diagnostics] FIRST DIVERGENCE after recorded frame %llu "
                  "(machine frame %llu, %llu frames matched; last checkpoint segment "

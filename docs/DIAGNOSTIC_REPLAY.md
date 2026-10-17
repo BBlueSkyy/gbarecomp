@@ -88,6 +88,10 @@ Reading the result:
   last frame never finished: a hang, crash or kill. Playback executed that
   input, so the fault should recur right there. Run it under a debugger, or use
   `--dump-frames` on the frames just before it.
+- **`note: frame N matches; host bookkeeping differs (call-stack)`.** This is
+  expected after playback resynchronizes at a checkpoint by redispatching. The
+  runtime's call-return stack is host bookkeeping, so it is fingerprinted but
+  never counted as a divergence.
 - **`frame N reached at the present hook but recorded at the runner loop`.** The
   guest reached that frame through a different execution path, which is an
   early divergence signal.

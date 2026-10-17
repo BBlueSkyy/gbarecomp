@@ -67,6 +67,10 @@ struct DiagnosticRegion {
     const char* name = "";
     const void* data = nullptr;
     std::size_t size = 0;
+    // Host bookkeeping that mirrors guest execution but is not guest state
+    // (the runtime's call-return stack, trimmed when playback resynchronizes
+    // by redispatching). A mismatch here is reported, never a divergence.
+    bool advisory = false;
 };
 
 struct DiagnosticReplayHost {
@@ -199,6 +203,7 @@ private:
     std::uint64_t save_seq_ = 0;
     std::uint64_t gaps_ = 0;
     std::uint64_t matched_ = 0;
+    std::uint64_t advisory_mismatches_ = 0;
     std::size_t segment_state_bytes_ = 0;
     std::size_t history_bytes_ = 0;
     std::vector<std::size_t> history_sizes_;
