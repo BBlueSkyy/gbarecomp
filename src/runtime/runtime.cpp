@@ -4044,7 +4044,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             const auto n = bus.audio().drain_sample_block(audio_buf, 2048, rate);
             if (!n) break;
             if (!fast_forward_active) {
-                gba_mod_audio_mix(audio_buf, n);
+                gba_mod_audio_mix_at_rate(audio_buf, n, rate);
                 win.push_audio_block(audio_buf, n, rate);
             }
         }
@@ -4052,7 +4052,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         uint32_t rate = 0;
         const auto n = bus.audio().drain_sample_block(audio_buf, 2048, rate);
         if (n && !fast_forward_active) {
-            gba_mod_audio_mix(audio_buf, n);
+            gba_mod_audio_mix_at_rate(audio_buf, n, rate);
             win.push_audio_block(audio_buf, n, rate);
         }
 #endif
