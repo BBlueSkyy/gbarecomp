@@ -38,6 +38,7 @@
 #include "self_heal.h"
 #include "overlay_loader.h"
 #include "../gba/mod_audio.h"
+#include "codebreaker.h"
 #if defined(GBARECOMP_ENABLE_MODS)
 #include "mod_runtime.h"
 #endif
@@ -1608,6 +1609,18 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             args.resize_view = gba_mod_adaptive_view_enabled() != 0;
     }
 #endif
+    // Declarative mod cheats ([[cheat]] records of enabled features). They
+    // mutate guest RAM, so they run only in a single-player session whose
+    // catalog committed them: netplay never loads the catalog (and returned
+    // above in any case), and a diagnostic replay must reproduce the recorded
+    // session, which capture never records with cheats active.
+#if defined(GBARECOMP_ENABLE_MODS)
+    const bool mod_cheats_active = mods_ready && !netplay &&
+        args.replay_diagnostic.empty() &&
+        mod_runtime_committed_cheat_count() > 0;
+#else
+    const bool mod_cheats_active = false;
+#endif
 
     gba::GbaBus bus;
     gba::GbaPpu ppu;
@@ -2489,8 +2502,37 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         std::fprintf(stderr, "[gbarecomp:runtime] cheats=ENABLED count=%zu "
                              "(validation only)\n", cheats.size());
     }
-    if (opts.extended_view_frame || !cheats.empty()) {
+    // Mod cheats go through the bus like the game's own stores; the parser
+    // already confined every address to EWRAM/IWRAM.
+    codebreaker::Memory mod_cheat_memory;
+    mod_cheat_memory.ctx = &bus;
+    mod_cheat_memory.read16 = [](void* c, uint32_t a) {
+        return static_cast<gba::GbaBus*>(c)->read16(a);
+    };
+    mod_cheat_memory.write8 = [](void* c, uint32_t a, uint8_t v) {
+        static_cast<gba::GbaBus*>(c)->write8(a, v);
+    };
+    mod_cheat_memory.write16 = [](void* c, uint32_t a, uint16_t v) {
+        static_cast<gba::GbaBus*>(c)->write16(a, v);
+    };
+    std::atomic<uint64_t> mod_cheat_frames{0};
+#if defined(GBARECOMP_ENABLE_MODS)
+    if (mod_cheats_active) {
+        std::string names;
+        for (const std::string& name : mod_runtime_committed_cheat_names())
+            names += (names.empty() ? "" : ", ") + name;
+        std::fprintf(stderr, "[gbarecomp:runtime] mod cheats ENABLED count=%zu: %s\n",
+                     mod_runtime_committed_cheat_count(), names.c_str());
+    }
+#endif
+    if (opts.extended_view_frame || !cheats.empty() || mod_cheats_active) {
         runtime_set_frame_start_hook([&]() {
+#if defined(GBARECOMP_ENABLE_MODS)
+            if (mod_cheats_active) {
+                mod_runtime_run_cheats(mod_cheat_memory);
+                mod_cheat_frames.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
             for (const Cheat& c : cheats)
                 for (unsigned i = 0; i < c.bytes; ++i)
                     c.ptr[i] = static_cast<uint8_t>(c.value >> (8 * i));
@@ -2592,6 +2634,27 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     // commands first, then the game's own extension.
     auto tcp_extension = [&](const std::string& request, std::string& reply) -> bool {
         if (touch_tcp_command(request, reply)) return true;
+        // Read-only: which committed mod cheats this session runs and how many
+        // frames they have been applied (always-on counter, no arming).
+        if (request.find("\"mod_cheats\"") != std::string::npos) {
+            std::string body = "{\"ok\":true,\"active\":";
+            body += mod_cheats_active ? "true" : "false";
+            body += ",\"frames_applied\":" +
+                    std::to_string(mod_cheat_frames.load(std::memory_order_relaxed));
+            body += ",\"cheats\":[";
+#if defined(GBARECOMP_ENABLE_MODS)
+            if (mod_cheats_active) {
+                bool first = true;
+                for (const std::string& name : mod_runtime_committed_cheat_names()) {
+                    body += (first ? "\"" : ",\"") + name + "\"";
+                    first = false;
+                }
+            }
+#endif
+            body += "]}";
+            reply = std::move(body);
+            return true;
+        }
         if (!opts.tcp_command) return false;
         std::string streamed;
         auto write = [](void* ctx, const char* data, std::size_t len) {
@@ -4243,6 +4306,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         if (want && !cheats.empty()) {
             std::fprintf(stderr, "[gbarecomp:diagnostics] replay capture disabled "
                                  "while GBARECOMP_CHEATS is active\n");
+            want = false;
+        }
+        if (want && mod_cheats_active) {
+            std::fprintf(stderr, "[gbarecomp:diagnostics] replay capture disabled "
+                                 "while mod cheats are enabled\n");
             want = false;
         }
         if (want && args.window && args.tcp_port <= 0) {
