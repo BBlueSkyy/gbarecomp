@@ -1898,6 +1898,15 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 std::fprintf(stderr, "[gbarecomp:runtime] %s\n", err.c_str());
                 return 1;
             }
+            // A 64 Kbit-sized file against a 4 Kbit config is not rejected:
+            // start the part at the file's size so no byte is dropped, and let
+            // the game's own requests settle the part
+            // (GbaSave::eeprom_observe_request_length). Files written while a
+            // title was configured with the wrong part are 8 KB.
+            if (save_bytes.size() == 8u * 1024u &&
+                bus.save().eeprom_size() < save_bytes.size()) {
+                bus.save().configure_eeprom(save_bytes.size());
+            }
             if (save_bytes.size() > bus.save().eeprom_size()) {
                 std::fprintf(stderr,
                              "[gbarecomp:runtime] save file too large: %s "
@@ -1989,6 +1998,24 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         // the new complete state, never a torn/half-written mix. This matters
         // because we now flush periodically during play (see the loop), not
         // just once on exit.
+        // A save that shrinks (an 8 KB EEPROM file once the game showed a
+        // 4 Kbit part) never replaces the only copy of the larger file: the
+        // first such flush keeps it beside the save.
+        {
+            std::error_code size_ec;
+            const auto on_disk = std::filesystem::file_size(args.save_path, size_ec);
+            const std::string bak = args.save_path + ".prev-size.bak";
+            if (!size_ec && on_disk > save_bytes.size() &&
+                !std::filesystem::exists(bak, size_ec)) {
+                std::filesystem::copy_file(args.save_path, bak, size_ec);
+                if (size_ec) {
+                    std::fprintf(stderr, "[gbarecomp:runtime] save not written: "
+                                 "could not back up %s before shrinking it (%s)\n",
+                                 args.save_path.c_str(), size_ec.message().c_str());
+                    return SaveFlush::Failed;
+                }
+            }
+        }
         const std::string tmp = args.save_path + ".tmp";
         if (!write_file(tmp, save_bytes, &err)) {
             std::fprintf(stderr, "[gbarecomp:runtime] %s\n", err.c_str());
