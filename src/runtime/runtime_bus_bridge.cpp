@@ -266,6 +266,9 @@ void sync_bios_access() {
 
 void set_active_bus(gba::GbaBus* bus) {
     g_active_bus = bus;
+    g_runtime_ram_code_view = [](uint32_t address, uint32_t size) -> const uint8_t* {
+        return g_active_bus ? g_active_bus->native_code_view(address,size) : nullptr;
+    };
     if (bus) {
         bus->bind_wait_table(&g_runtime_waits);
     } else if (gba::GbaBus* owner = gba::GbaBus::wait_table_owner()) {

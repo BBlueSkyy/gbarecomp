@@ -33,6 +33,8 @@ const TestMemInit mem_word_at_1000_dead[] = {
     {0x1000u, 0xDEADBEEFu},
 };
 
+const TestMemInit mem_runtime_literal[] = {{0x03007D44u,0x12345678u}};
+
 const TestMemInit mem_word_at_1004_cafe[] = {
     {0x1004u, 0xCAFEF00Du},
 };
@@ -81,6 +83,58 @@ const TestMemInit mem_swp_init[] = {
 #define MODE_FIQ    0x11u
 
 const TestCase kTestCases[] = {
+    {"runtime_pc_ram_reviewed_imm",true,0x03007D3Eu,0x2005u,
+     {},MODE_SYSTEM|(1u<<5),nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_reviewed_imm",true,0x0800103Eu,0x2005u,
+     {},MODE_SYSTEM|(1u<<5),nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_thumb_adr",true,0x0800103Eu,0xA001u,
+     {},MODE_SYSTEM|(1u<<5),nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_arm_operand",false,0x0800103Cu,0xE1A0000Fu,
+     {},MODE_SYSTEM,nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_arm_store_pc",false,0x0800103Cu,0xE580F000u,
+     {0x2000u},MODE_SYSTEM,nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_arm_ldm",false,0x0800103Cu,0xE8B00006u,
+     {0x2000u},MODE_SYSTEM,mem_block_ldm_pattern,4,true,0,0,true},
+    {"runtime_pc_cart_arm_swp",false,0x0800103Cu,0xE1001092u,
+     {0x3000u,0,0x1234u},MODE_SYSTEM,mem_swp_init,1,true,0,0,true},
+    {"runtime_pc_cart_arm_mul",false,0x0800103Cu,0xE0000190u,
+     {3,0x80000000u},MODE_SYSTEM,nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_mirror_arm_operand",false,0x0A00103Cu,0xE1A0000Fu,
+     {},MODE_SYSTEM,nullptr,0,true,0,0,true},
+    {"runtime_pc_cart_mirror_arm_load",false,0x0C00103Cu,0xE5901000u,
+     {0x2000u},MODE_SYSTEM,mem_word_at_2000_target,1,true,0,0,true},
+    {"runtime_pc_cart_arm_branch",false,0x0800103Cu,0xEA000000u,
+     {},MODE_SYSTEM,nullptr,0,true,0,0,true},
+    {"runtime_pc_thumb_adr_unaligned",true,0x03007D3Eu,0xA001u,
+     {},MODE_SYSTEM|(1u<<5),nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_thumb_literal_unaligned",true,0x03007D3Eu,0x4801u,
+     {},MODE_SYSTEM|(1u<<5),mem_runtime_literal,1,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_arm_operand",false,0x03007D3Cu,0xE1A0000Fu,
+     {},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_arm_store_pc",false,0x03007D3Cu,0xE580F000u,
+     {0x03001000u},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_arm_stm_pc",false,0x03007D3Cu,0xE8A08000u,
+     {0x03001000u},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_arm_register_shift_pc",false,0x03007D3Cu,0xE1A0111Fu,
+     {0,1},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_data_immediate_stays_literal",false,0x03007D3Cu,0xE3A00403u,
+     {},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_arm_branch",false,0x03007D3Cu,0xEA000000u,
+     {},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_arm_call",false,0x03007D3Cu,0xEB000000u,
+     {},MODE_SYSTEM,nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_thumb_bl_prefix",true,0x03007D3Eu,0xF000u,
+     {},MODE_SYSTEM|(1u<<5),nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_thumb_bl_suffix",true,0x03007D3Eu,0xF800u,
+     {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x03001000u},MODE_SYSTEM|(1u<<5),nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_thumb_add_pc",true,0x03007D3Eu,0x449Fu,
+     {0,0,0,6},MODE_SYSTEM|(1u<<5),nullptr,0,true,0x03000000u,0x8000u,true},
+    {"runtime_pc_ewram_arm_operand",false,0x02001234u,0xE1A0000Fu,
+     {},MODE_SYSTEM,nullptr,0,true,0x02000000u,0x40000u,true},
+    {"runtime_pc_ewram_thumb_adr",true,0x02001236u,0xA001u,
+     {},MODE_SYSTEM|(1u<<5),nullptr,0,true,0x02000000u,0x40000u,true},
+    {"runtime_pc_ewram_arm_branch",false,0x02001234u,0xEA000000u,
+     {},MODE_SYSTEM,nullptr,0,true,0x02000000u,0x40000u,true},
     // ── DP imm: MOV ─────────────────────────────────────────────────
     {
         "arm_mov_imm",

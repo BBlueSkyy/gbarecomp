@@ -781,7 +781,7 @@ bool load_config(const std::string& path, Config& out) {
         out.program.aot_scan_start = static_cast<uint32_t>(aot_scan_start);
         out.program.aot_scan_end = static_cast<uint32_t>(aot_scan_end);
         out.program.static_resume_all =
-            t["static_resume_all"].value_or(false);
+            t["static_resume_all"].value_or(true);
         if ((out.program.aot_scan_start == 0) !=
             (out.program.aot_scan_end == 0) ||
             (out.program.aot_scan_start != 0 &&

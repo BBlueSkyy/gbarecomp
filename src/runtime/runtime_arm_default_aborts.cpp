@@ -74,6 +74,15 @@ bool self_heal_verbose() {
     return value && value[0] != '\0' && value[0] != '0';
 }
 
+void reject_strict_interpreter(uint32_t pc,const char* path) {
+    const char* value=std::getenv("GBARECOMP_STRICT_STATIC");
+    if (!value || !value[0] || value[0]=='0') return;
+    std::fprintf(stderr,"runtime_arm: STRICT_STATIC %s interpreter execution for "
+        "pc=0x%08X is forbidden; use verified AOT coverage.\n",path,pc);
+    runtime_trace_dump_recent(96);
+    std::abort();
+}
+
 // Program identity, set once at startup, stamped into the persisted miss/
 // coverage logs so they are never ambiguous about which game produced them
 // (and so per-game default filenames don't clobber each other).
@@ -118,7 +127,7 @@ void self_heal_write_report(const char* frag_path) {
     std::uint64_t healed = 0, native_calls = 0, inflight = 0, failed = 0;
     gbarecomp::overlay_counters(&healed, &native_calls, &inflight, &failed);
 
-    if (g_misses.empty() && healed == 0) {
+    if (g_misses.empty() && healed == 0 && g_interp_insns == 0) {
         std::printf("self_heal_coverage=FULLY_STATIC dispatch_misses=0 "
                     "interpreted_insns=0 healed_native=0\n");
         return;
@@ -259,7 +268,7 @@ std::string self_heal_misses_json() {
 
     // FULLY_STATIC iff nothing was bridged AND nothing was healed (a warm
     // cache heals with zero misses but is still NOT fully static).
-    const bool fully_static = g_misses.empty() && healed == 0;
+    const bool fully_static = g_misses.empty() && healed == 0 && g_interp_insns == 0;
 
     std::string out;
     char buf[640];
@@ -436,6 +445,7 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
                                         uint32_t forced_stop_pc,
                                         std::uint64_t max_instrs) {
     using gbarecomp::active_bus;
+    reject_strict_interpreter(entry_pc,"bridge");
 
     // Instruction budget: 0 → the default 200M abort-on-runaway (the on-miss
     // bridge); non-zero → a bounded gate pass that returns 0 instead of aborting.
@@ -827,6 +837,8 @@ extern "C" void runtime_force_interp_step(void) {
     g_runtime_force_interp_step_active = 0;
     if (should_yield) return;
 
+    reject_strict_interpreter(g_cpu.R[15],"forced");
+
     armv4t::CPUState cpu{};
     gbarecomp::load_arm_cpu_into_interp(g_cpu, cpu);
     const std::uint32_t pc = cpu.R[15];
@@ -865,6 +877,7 @@ extern "C" void runtime_force_interp_step(void) {
         std::abort();
     }
 
+    ++g_interp_insns;
     if (r == armv4t::Interpreter::Result::Swi) {
         // Route the SWI through the recompiled BIOS exactly as generated SWI
         // codegen (and the self-heal bridge) does: set the return address, then

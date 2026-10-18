@@ -67,6 +67,7 @@
 #include "thumb_decode.h"  // armv4t::ThumbDecoder
 #include "arm_ir.h"        // armv4t::Instr, ir_op_name
 #include "emit_function.h"
+#include "ram_templates.h"
 #include "arm_codegen.h"
 #include "arm_decode.h"
 #include "thumb_decode.h"
@@ -525,6 +526,7 @@ void commit_generated_file(const std::string& temp,
 
 void write_header(const std::string& dir,
                    const std::vector<Function>& funcs,
+                   const std::vector<gbarecomp::RamCodeTemplate>& ram_templates,
                    const OutputNames& names) {
     std::string path = dir + "/" + names.header;
     std::string temp = path + ".tmp";
@@ -547,6 +549,11 @@ void write_header(const std::string& dir,
                      fn.name.c_str(), fn.addr,
                      fn.mode == CpuMode::Thumb ? "thumb" : "arm");
     }
+    for (const auto& t : ram_templates) {
+        std::fprintf(f, "void %s(void);\n", t.function.name.c_str());
+        if (!t.cart_function.name.empty())
+            std::fprintf(f,"void %s(void);\n",t.cart_function.name.c_str());
+    }
     std::fprintf(f, "}  /* extern \"C\" */\n");
     std::fclose(f);
     commit_generated_file(temp, path);
@@ -554,6 +561,7 @@ void write_header(const std::string& dir,
 
 void write_dispatch_table(const std::string& dir,
                            const std::vector<Function>& funcs,
+                           const std::vector<gbarecomp::RamCodeTemplate>& ram_templates,
     const OutputNames& names) {
     std::string path = dir + "/" + names.dispatch;
     std::string temp = path + ".tmp";
@@ -585,6 +593,58 @@ void write_dispatch_table(const std::string& dir,
         "};\n"
         "extern \"C\" const unsigned %s = %zu;\n",
         names.table_len_symbol.c_str(), entries.size());
+    if (!ram_templates.empty()) {
+        std::fprintf(f, "\n#include \"runtime_arm.h\"\nnamespace {\n");
+        struct RamEntry { uint64_t key; uint32_t index, offset; };
+        std::vector<RamEntry> ram_entries;
+        for (std::size_t i = 0; i < ram_templates.size(); ++i) {
+            const auto& t = ram_templates[i];
+            std::fprintf(f, "const uint8_t ram_bytes_%zu[] = {", i);
+            for (uint8_t b : t.bytes) std::fprintf(f, "%uu,", unsigned(b));
+            std::fprintf(f, "};\n");
+            if (!t.masks.empty()) {
+                std::fprintf(f,"const uint8_t ram_masks_%zu[] = {",i);
+                for (uint8_t b : t.masks) std::fprintf(f,"%uu,",unsigned(b));
+                std::fprintf(f,"};\n");
+            }
+            const bool thumb = t.function.mode == CpuMode::Thumb;
+            const uint32_t step = thumb ? 2u : 4u;
+            for (uint32_t offset = 0; offset < t.bytes.size(); offset += step) {
+                uint32_t opcode = 0;
+                for (uint32_t b = 0; b < step; ++b)
+                    opcode |= uint32_t(t.bytes[offset+b] &
+                        (t.masks.empty() ? 0xFFu : t.masks[offset+b])) << (8u*b);
+                ram_entries.push_back({(uint64_t(opcode)<<1)|unsigned(thumb),
+                                       uint32_t(i), offset});
+            }
+        }
+        std::fprintf(f, "const RuntimeNativeRamTemplate ram_templates[] = {\n");
+        for (std::size_t i = 0; i < ram_templates.size(); ++i) {
+            const auto& t = ram_templates[i];
+            const auto masks=t.masks.empty() ? std::string("nullptr") : "ram_masks_"+std::to_string(i);
+            std::fprintf(f, "{ram_bytes_%zu, %zuu, %uu, %s, %s, %s},\n", i,
+                t.bytes.size(), t.function.mode == CpuMode::Thumb ? 1u : 0u,
+                t.function.name.c_str(),t.cart_function.name.empty()
+                    ? "nullptr" : t.cart_function.name.c_str(),masks.c_str());
+        }
+        std::fprintf(f, "};\nconst RuntimeNativeRamEntry ram_entries[] = {\n");
+        std::sort(ram_entries.begin(), ram_entries.end(), [&](const auto& a, const auto& b) {
+            if (a.key != b.key) return a.key < b.key;
+            const auto as = ram_templates[a.index].bytes.size();
+            const auto bs = ram_templates[b.index].bytes.size();
+            if (as != bs) return as > bs;
+            if (a.index != b.index) return a.index < b.index;
+            return a.offset < b.offset;
+        });
+        for (const auto& e : ram_entries)
+            std::fprintf(f, "{0x%llXull, %uu, %uu},\n",
+                         static_cast<unsigned long long>(e.key), e.index, e.offset);
+        std::fprintf(f,
+            "};\nstruct RegisterNativeRam { RegisterNativeRam() {\n"
+            "runtime_register_native_ram_templates(ram_templates, %zuu, "
+            "ram_entries, %zuu);\n} } register_native_ram;\n} // namespace\n",
+            ram_templates.size(), ram_entries.size());
+    }
     std::fclose(f);
     commit_generated_file(temp, path);
 }
@@ -774,6 +834,7 @@ void commit_generated_file(const std::string& temp,
 
 void write_body(const std::string& dir,
                 const std::vector<Function>& funcs,
+                const std::vector<gbarecomp::RamCodeTemplate>& ram_templates,
                 const uint8_t* rom, std::size_t rom_size,
                 uint32_t rom_base,
                 const OutputNames& names,
@@ -782,7 +843,13 @@ void write_body(const std::string& dir,
                     alu_immediate_override_pcs,
                 const std::unordered_set<uint64_t>* mod_function_hook_keys) {
     std::unordered_map<uint64_t, std::string> name_by_key;
+    const bool mutable_cartridge=std::any_of(ram_templates.begin(),ram_templates.end(),
+        [](const auto& t) { return !t.cart_function.name.empty(); });
     for (const auto& fn : funcs) {
+        const auto region=fn.addr>>24;
+        if (region==2u || region==3u || (mutable_cartridge &&
+            region>=8u && region<=13u && (fn.addr & 0x01FFFFFFu)<0x2000u))
+            continue; // mutable targets must pass byte verification at dispatch
         uint64_t key = (static_cast<uint64_t>(fn.addr) << 1u) |
             (fn.mode == CpuMode::Thumb ? 1u : 0u);
         name_by_key[key] = fn.name;
@@ -847,6 +914,24 @@ void write_body(const std::string& dir,
                            alu_immediate_override_pcs,
                            mod_function_hook_keys);
         std::fprintf(f, "}\n\n");
+        }
+        const std::unordered_map<uint64_t, std::string> no_direct_names;
+        for (std::size_t i = shard; i < ram_templates.size(); i += shard_count) {
+            const auto& t = ram_templates[i];
+            std::fprintf(f, "/* Byte-verified ROM copy from 0x%08X */\n"
+                            "void %s(void) {\n", t.function.source_addr,
+                            t.function.name.c_str());
+            const auto body = emit_function_body_str(t.function, t.bytes.data(), t.bytes.size(),
+                t.function.source_addr, no_direct_names, alu_immediate_override_pcs, mod_function_hook_keys, true);
+            std::fwrite(body.data(), 1, body.size(), f);
+            std::fprintf(f, "}\n\n");
+            if (!t.cart_function.name.empty()) {
+                std::fprintf(f,"void %s(void) {\n",t.cart_function.name.c_str());
+                const auto cart_body=emit_function_body_str(t.cart_function,t.bytes.data(),t.bytes.size(),
+                    t.cart_function.source_addr,no_direct_names,alu_immediate_override_pcs,mod_function_hook_keys,true);
+                std::fwrite(cart_body.data(),1,cart_body.size(),f);
+                std::fprintf(f,"}\n\n");
+            }
         }
         std::fclose(f);
         commit_generated_file(temp, path);
@@ -1452,7 +1537,15 @@ int main(int argc, char** argv) {
                 cli.out_dir, data_syms, cli.output_prefix);
         }
     }
-    write_header(cli.out_dir, emit_funcs, names);
+    const auto ram_templates = cli.bios_mode
+        ? std::vector<gbarecomp::RamCodeTemplate>{}
+        : gbarecomp::collect_ram_code_templates(emit_funcs, rom.data(), rom.size(),
+                                               effective_rom_base, cli.output_prefix,
+                                                 &finder.data_ranges(), &finder.code_copies(),
+                                                 &finder.constant_code_patches());
+    if (!cli.bios_mode)
+        std::printf("==> native RAM copy templates: %zu\n", ram_templates.size());
+    write_header(cli.out_dir, emit_funcs, ram_templates, names);
     uint32_t codegen_shards = cli.codegen_shards != 0
         ? cli.codegen_shards
         : (have_cfg ? cfg.program.codegen_shards : 0u);
@@ -1470,7 +1563,7 @@ int main(int argc, char** argv) {
                 "cartridges; selecting adaptive shards\n");
         }
         codegen_shards = gbarecomp::choose_auto_codegen_shards(
-            emit_funcs.size());
+            emit_funcs.size() + ram_templates.size());
     }
     if (!cli.bios_mode) {
         std::printf("==> codegen shards: %u%s\n", codegen_shards,
@@ -1492,13 +1585,13 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    write_body(cli.out_dir, emit_funcs, rom.data(), rom.size(), effective_rom_base,
+    write_body(cli.out_dir, emit_funcs, ram_templates, rom.data(), rom.size(), effective_rom_base,
                names, codegen_shards,
                alu_immediate_override_pcs.empty()
                    ? nullptr : &alu_immediate_override_pcs,
                mod_function_hook_keys.empty()
                    ? nullptr : &mod_function_hook_keys);
-    write_dispatch_table(cli.out_dir, emit_funcs, names);
+    write_dispatch_table(cli.out_dir, emit_funcs, ram_templates, names);
     std::printf("==> wrote %s/{%s, %s%s, %s}\n",
                 cli.out_dir.c_str(),
                 names.header.c_str(),

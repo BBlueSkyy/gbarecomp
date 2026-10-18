@@ -46,6 +46,7 @@ int main() {
         "addr = 0x08000020\n"
         "mode = \"thumb\"\n");
     if (!write_file(path, valid) || !gbarecomp::load_config(path.string(), cfg) ||
+        !cfg.program.static_resume_all ||
         cfg.mod_function_hooks.size() != 1 ||
         cfg.mod_function_hooks[0].mode != gbarecomp::CpuMode::Thumb) {
         fs::remove(path, ec);
@@ -56,6 +57,14 @@ int main() {
         "[[mod_function_hook]]\n"
         "addr = 0x08000021\n"
         "mode = \"thumb\"\n");
+    std::string explicit_no_resumes = valid;
+    explicit_no_resumes.insert(explicit_no_resumes.find("[identity]"), "static_resume_all = false\n\n");
+    if (!write_file(path, explicit_no_resumes) || !gbarecomp::load_config(path.string(), cfg) ||
+        cfg.program.static_resume_all || !write_file(path, valid) ||
+        !gbarecomp::load_config(path.string(), cfg) || !cfg.program.static_resume_all) {
+        fs::remove(path, ec);
+        return fail("explicit static-resume override or reloaded default was lost");
+    }
     if (!write_file(path, unaligned) || gbarecomp::load_config(path.string(), cfg)) {
         fs::remove(path, ec);
         return fail("unaligned mod_function_hook was accepted");

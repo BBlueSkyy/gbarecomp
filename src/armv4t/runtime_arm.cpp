@@ -61,6 +61,7 @@ extern "C" RuntimeThumbAluImmediateOverride
     g_runtime_thumb_alu_imm_override = nullptr;
 extern "C" RuntimeBusReadOverride g_runtime_bus_read_override = nullptr;
 extern "C" RuntimeRamDispatchHook g_runtime_ram_dispatch_hook = nullptr;
+extern "C" RuntimeRamCodeView g_runtime_ram_code_view = nullptr;
 extern "C" RuntimeForceInterpHook g_runtime_force_interp_hook = nullptr;
 extern "C" int g_runtime_force_interp_step_active = 0;
 
@@ -117,6 +118,7 @@ const char* trace_kind_name(uint32_t kind) {
         case RUNTIME_TRACE_IRQ:       return "irq";
         case RUNTIME_TRACE_CALL:      return "call";
         case RUNTIME_TRACE_MEM_READ:  return "mem_r";
+        case RUNTIME_TRACE_CODE_MISMATCH: return "code_mismatch";
         default:                      return "unknown";
     }
 }
@@ -849,9 +851,86 @@ constexpr uint32_t kBiosRegionEnd = 0x00004000u;
 
 extern "C" {
 GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_tail_arg = 0u;
+GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_native_ram_base = 0u;
 }
 
 namespace {
+
+const RuntimeNativeRamTemplate* g_native_ram_templates = nullptr;
+const RuntimeNativeRamEntry* g_native_ram_entries = nullptr;
+uint32_t g_native_ram_template_count = 0, g_native_ram_entry_count = 0;
+struct NativeRamCache {
+    uint32_t pc = 0, base = 0;
+    const RuntimeNativeRamEntry* entry = nullptr;
+};
+NativeRamCache g_native_ram_cache[256];
+
+bool guarded_code_address(uint32_t pc, bool thumb) {
+    return g_native_ram_template_count && g_runtime_ram_code_view &&
+        g_runtime_ram_code_view(pc,thumb ? 2u : 4u);
+}
+
+const RuntimeNativeRamEntry* lookup_native_ram(uint32_t pc, bool thumb,
+                                               uint32_t* base_out) {
+    const auto region=pc >> 24;
+    const bool cartridge=region>=8u && region<=13u;
+    if ((region != 2u && region != 3u && !cartridge) ||
+        (pc & (thumb ? 1u : 3u)) || !g_runtime_ram_code_view ||
+        !g_native_ram_entry_count) return nullptr;
+    auto matches = [&](const RuntimeNativeRamEntry& e, uint32_t base) {
+        if (e.template_index >= g_native_ram_template_count) return false;
+        const auto& t = g_native_ram_templates[e.template_index];
+        if ((t.thumb != 0) != thumb || e.offset >= t.size ||
+            (cartridge ? !t.cart_fn : !t.fn)) return false;
+        const auto* bytes = g_runtime_ram_code_view(base, t.size);
+        if (!bytes) return false;
+        bool equal=t.masks ? true : std::memcmp(bytes,t.bytes,t.size)==0;
+        if (t.masks) for (uint32_t n=0;n<t.size;++n)
+            equal &= ((bytes[n]^t.bytes[n]) & t.masks[n])==0;
+        if (equal) return true;
+        if (runtime_trace_enabled()) {
+            for (uint32_t n=0;n<t.size;++n)
+                if (((bytes[n]^t.bytes[n]) & (t.masks ? t.masks[n] : 0xFFu))!=0) {
+                runtime_trace_event(RUNTIME_TRACE_CODE_MISMATCH,pc,base+n,
+                                    bytes[n],t.bytes[n]);
+                break;
+            }
+        }
+        return false;
+    };
+    auto& cached = g_native_ram_cache[((pc >> 1) ^ (pc >> 11)) & 255u];
+    if (cached.pc == pc && cached.entry && matches(*cached.entry, cached.base)) {
+        *base_out = cached.base;
+        return cached.entry;
+    }
+    const uint32_t step = thumb ? 2u : 4u;
+    const auto* bytes = g_runtime_ram_code_view(pc, step);
+    if (!bytes) return nullptr;
+    uint32_t opcode = 0;
+    for (uint32_t b = 0; b < step; ++b) opcode |= uint32_t(bytes[b]) << (8u*b);
+    const uint64_t keys[] = {(uint64_t(opcode) << 1) | unsigned(thumb),
+                            uint64_t(opcode & ~0xFFFu) << 1};
+    for (unsigned search=0;search<(thumb || !(opcode & 0xFFFu) ? 1u : 2u);++search) {
+    const uint64_t key=keys[search];
+    uint32_t lo = 0, hi = g_native_ram_entry_count;
+    while (lo < hi) {
+        const auto mid = lo + (hi-lo)/2;
+        if (g_native_ram_entries[mid].key < key) lo = mid + 1;
+        else hi = mid;
+    }
+    for (uint32_t i = lo; i < g_native_ram_entry_count &&
+                         g_native_ram_entries[i].key == key; ++i) {
+        const auto& e = g_native_ram_entries[i];
+        if (e.offset > pc) continue;
+        const uint32_t base = pc - e.offset;
+        if (base >> 24 != pc >> 24 || !matches(e, base)) continue;
+        cached = {pc, base, &e};
+        *base_out = base;
+        return &e;
+    }
+    }
+    return nullptr;
+}
 
 // Everything runtime_dispatch does before entering generated code. Returns the
 // entry to call, or nullptr when the transfer already completed here (force-
@@ -879,6 +958,20 @@ const DispatchEntry* dispatch_resolve(uint32_t target_pc) {
         runtime_bridge_interpret(pc, thumb, 0u, 0u);
         return nullptr;
     }
+    uint32_t ram_base = 0;
+    if (const auto* ram = lookup_native_ram(pc, thumb, &ram_base)) {
+        const auto& t = g_native_ram_templates[ram->template_index];
+        // Capture placement before entering the body; nested IRQs may select
+        // another template. A resumed body derives it again from live RAM.
+        g_runtime_native_ram_base = ram_base;
+        const bool cartridge=pc>=0x08000000u;
+        g_runtime_resume_pc = ram->offset
+            ? (cartridge ? 0x08000000u : 0x03000000u)+ram->offset : 0u;
+        static GBARECOMP_TAIL_ARG_TLS DispatchEntry ram_entry;
+        ram_entry = {pc, uint8_t(thumb), uint8_t(ram->offset != 0),
+                     cartridge ? t.cart_fn : t.fn};
+        return &ram_entry;
+    }
     if (pc >= 0x02000000u && pc < 0x04000000u && g_runtime_ram_dispatch_hook &&
         (!g_resumable_context || !g_resumable_context->ram_dispatch_filter ||
          g_resumable_context->ram_dispatch_filter(pc, thumb ? 1 : 0))) {
@@ -894,7 +987,10 @@ const DispatchEntry* dispatch_resolve(uint32_t target_pc) {
         if (g_runtime_ram_dispatch_hook(pc, thumb ? 1 : 0)) return nullptr;
     }
     const DispatchEntry* entry = nullptr;
-    if (pc < kBiosRegionEnd) {
+    if (guarded_code_address(pc,thumb)) {
+        // No byte-verified body matched. A fixed mutable-code entry describes
+        // the old bytes and must not silently execute after a code rewrite.
+    } else if (pc < kBiosRegionEnd) {
         entry = lookup_in(
             kBiosDispatchTable, kBiosDispatchTableLen, pc, thumb);
     } else {
@@ -959,10 +1055,46 @@ extern "C" void runtime_dispatch_with_exchange_tail(void) {
 
 extern "C" int runtime_has_static_entry(uint32_t pc, int thumb) {
     uint32_t a = pc & ~1u;
+    uint32_t base = 0;
+    if (lookup_native_ram(a, thumb != 0, &base)) return 1;
+    if (guarded_code_address(a,thumb != 0)) return 0;
     const DispatchEntry* entry = (a < kBiosRegionEnd)
         ? lookup_in(kBiosDispatchTable, kBiosDispatchTableLen, a, thumb != 0)
         : lookup_in(kDispatchTable, kDispatchTableLen, a, thumb != 0);
     return entry != nullptr ? 1 : 0;
+}
+
+extern "C" void runtime_register_native_ram_templates(
+    const RuntimeNativeRamTemplate* templates, uint32_t template_count,
+    const RuntimeNativeRamEntry* entries, uint32_t entry_count) {
+    g_native_ram_templates = templates;
+    g_native_ram_template_count = template_count;
+    g_native_ram_entries = entries;
+    g_native_ram_entry_count = entry_count;
+    for (auto& cached : g_native_ram_cache) cached = {};
+}
+
+extern "C" int runtime_native_ram_instruction_matches(uint32_t pc,
+    uint32_t opcode, uint32_t size) {
+    return runtime_native_ram_instruction_matches_masked(pc,opcode,size,0xFFFFFFFFu);
+}
+
+extern "C" int runtime_native_ram_instruction_matches_masked(uint32_t pc,
+    uint32_t opcode, uint32_t size, uint32_t mask) {
+    if (!g_runtime_ram_code_view || (size != 2u && size != 4u)) return 0;
+    const auto* bytes = g_runtime_ram_code_view(pc, size);
+    if (!bytes) return 0;
+    uint32_t actual = 0;
+    for (uint32_t b = 0; b < size; ++b) actual |= uint32_t(bytes[b]) << (8u*b);
+    return ((actual ^ opcode) & mask) == 0;
+}
+
+extern "C" uint32_t runtime_native_arm_immediate(uint32_t pc) {
+    const auto* bytes=g_runtime_ram_code_view ? g_runtime_ram_code_view(pc,4u) : nullptr;
+    if (!bytes) { runtime_unimplemented_op("native immediate view",pc); return 0; }
+    const uint32_t encoded=uint32_t(bytes[0]) | (uint32_t(bytes[1])<<8);
+    const uint32_t value=encoded & 0xFFu, rotate=((encoded>>8)&15u)*2u;
+    return rotate ? (value>>rotate)|(value<<(32u-rotate)) : value;
 }
 
 extern "C" unsigned long long g_runtime_call_return_evictions = 0;

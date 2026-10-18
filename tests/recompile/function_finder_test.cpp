@@ -117,7 +117,128 @@ static bool literal_callback(unsigned fault) {
     if (fault == 4) finder.add_data_range(kBase + 0x40, kBase + 0x4C, "data");
     finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "entry"});
     finder.run(64);
-    return has_function(finder, kBase + 0x40, gbarecomp::CpuMode::Thumb) == (fault == 0);
+    return has_function(finder, kBase + 0x40, gbarecomp::CpuMode::Thumb) ==
+        (fault == 0 || fault == 1 || fault == 3);
+}
+
+static bool copied_switch_source(bool adr, bool tagged) {
+    std::vector<std::uint8_t> rom(0x200, 0);
+    put16(rom, 0, adr ? 0xA03F : 0x4800); // referenced copy source at +0x100
+    put16(rom, 2, 0x4770);
+    put32(rom, 4, kBase + 0x100 + unsigned(tagged));
+    put16(rom, 0x100, 0xB500); // push {lr}
+    put16(rom, 0x102, 0x1C02); // mov r2,r0
+    put16(rom, 0x104, 0x2801); // cmp r0,#1
+    put16(rom, 0x106, 0xD81B); // bhi default
+    put16(rom, 0x108, 0x0080); // lsl r0,r0,#2
+    put16(rom, 0x10A, 0x4905); // literal names an absolute ROM table
+    put16(rom, 0x10C, 0x1840);
+    put16(rom, 0x10E, 0x6800);
+    put16(rom, 0x110, 0x4687); // mov pc,r0
+    put32(rom, 0x120, kBase + 0x124);
+    put32(rom, 0x124, kBase + 0x180);
+    put32(rom, 0x128, kBase + 0x190);
+    for (unsigned pc : {0x140u, 0x180u, 0x190u}) {
+        put16(rom, pc, 0x2001);
+        put16(rom, pc + 2, 0xBD00);
+    }
+    gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
+    finder.set_speculative_literal_harvest(false);
+    finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "entry"});
+    finder.run(64);
+    auto emitted = [&](uint32_t pc) {
+        for (const auto& fn : finder.functions()) {
+            if (pc >= fn.addr && pc < fn.end_addr) return true;
+            for (const auto& span : fn.switch_blocks)
+                if (pc >= span.start && pc < span.end) return true;
+        }
+        return false;
+    };
+    return emitted(kBase + 0x100) && emitted(kBase + 0x180) &&
+           emitted(kBase + 0x190) && finder.stats().auto_jump_tables == 1;
+}
+
+static bool byte_record_callbacks(unsigned fault) {
+    std::vector<std::uint8_t> rom(0x300,0);
+    put16(rom,0,0xB500); put16(rom,2,0x4D0F);
+    put16(rom,4,fault==1 ? 0x8821 : 0x7821); // byte index has 256 possible values
+    put16(rom,6,fault==2 ? 0x0050 : 0x0048); // i*2 (or unrelated index)
+    put16(rom,8,0x1840); put16(rom,10,0x00C0); // (i*2+i)*8 = i*24
+    put16(rom,12,0x1D29); put16(rom,14,0x1840); // table + i*24 + field 4
+    put16(rom,16,0x6800);
+    put16(rom,18,fault==4 ? 0xBC01 : 0x2800); // compare preserves target; POP replaces it
+    put16(rom,20,0xD00C); put16(rom,22,0xF000); put16(rom,24,0xF823);
+    put16(rom,26,0xBD00); put16(rom,0x30,0xBD00);
+    put32(rom,0x40,kBase+0x100);
+    put16(rom,0x60,fault==3 ? 0x4708 : 0x4700);
+    // Null first/intermediate slots do not terminate the finite-domain search.
+    put32(rom,0x100+24+4,kBase+0x201);
+    put32(rom,0x100+72+4,kBase+0x241);
+    put32(rom,0x100+24+8,kBase+0x281); // unrelated field must not be read
+    for (unsigned pc : {0x200u,0x240u,0x280u}) {
+        put16(rom,pc,0xB500);
+        for (unsigned n=2;n<10;n+=2) put16(rom,pc+n,0x2000);
+        put16(rom,pc+10,0xBD00);
+    }
+    gbarecomp::FunctionFinder finder(rom.data(),rom.size(),kBase);
+    finder.set_speculative_literal_harvest(false);
+    finder.add_seed({kBase,gbarecomp::CpuMode::Thumb,"entry"});
+    finder.run(64);
+    return has_function(finder,kBase+0x200,gbarecomp::CpuMode::Thumb)==(fault==0) &&
+        has_function(finder,kBase+0x240,gbarecomp::CpuMode::Thumb)==(fault==0) &&
+        !has_function(finder,kBase+0x280,gbarecomp::CpuMode::Thumb);
+}
+
+static bool arm_backward_adr_table(bool copied,unsigned fault) {
+    constexpr uint32_t ram=0x03000000u;
+    const uint32_t live=copied ? ram : kBase;
+    std::vector<uint8_t> image(0x200,0);
+    put32(image,0x100,fault==1 ? 0xE2407088u : fault==4 ? 0x124F7088u : 0xE24F7088u);
+    put32(image,0x104,fault==2 ? 0xE7976186u : 0xE7976106u);
+    put32(image,0x108,fault==3 ? 0xE12FFF15u : 0xE12FFF16u);
+    for (unsigned n=0;n<3;++n) {
+        const auto offset=0x20u+n*0x20u;
+        put32(image,0x80+n*4,live+offset);
+        put32(image,offset,0xE3A00001u+n);
+        put32(image,offset+4,0xE12FFF1Eu);
+    }
+    gbarecomp::FunctionFinder finder(image.data(),image.size(),kBase);
+    finder.set_speculative_literal_harvest(false);
+    if (copied) finder.add_code_copy(ram,kBase,uint32_t(image.size()),"ARM dispatcher and table");
+    finder.add_seed({live+0x100,gbarecomp::CpuMode::Arm,"dispatcher"});
+    finder.run(32);
+    for (unsigned n=0;n<3;++n)
+        if (has_function(finder,live+0x20u+n*0x20u,gbarecomp::CpuMode::Arm)!=(fault==0))
+            return false;
+    return finder.stats().auto_jump_tables==(fault==0 ? 1u : 0u);
+}
+
+static bool arm_sparse_preceding_table(bool copied,unsigned fault) {
+    const uint32_t live=copied ? 0x03000000u : kBase;
+    std::vector<uint8_t> image(0x200,0);
+    put32(image,0x100,fault==1 ? 0xE1A00000u : 0xE92D4000u); // PUSH LR / NOP
+    put32(image,0x104,0xE24F702Cu); // ADR r7,table at +E0
+    put32(image,0x108,0xE7976106u); // LDR r6,[r7,r6,LSL#2]
+    put32(image,0x10C,0xE12FFF16u); // BX r6
+    for (unsigned n=0;n<3;++n) {
+        const auto offset=0x20u+n*0x20u;
+        put32(image,0xE0u+(n==2 ? 3u : n)*4u,live+offset);
+        put32(image,offset,0xE3A00001u+n); put32(image,offset+4u,0xE12FFF1Eu);
+    }
+    if (fault==2) put32(image,0xFC,0x04000000u); // no complete pointer/null array
+    if (fault==3) put32(image,0xFC,live+0x62u); // misaligned ARM target
+    gbarecomp::FunctionFinder finder(image.data(),image.size(),kBase);
+    finder.set_speculative_literal_harvest(false);
+    if (copied) finder.add_code_copy(live,kBase,uint32_t(image.size()),"sparse ARM table");
+    finder.add_seed({live+0x100,gbarecomp::CpuMode::Arm,"dispatcher"});
+    finder.run(32);
+    if (!has_function(finder,live+0x20,gbarecomp::CpuMode::Arm) ||
+        !has_function(finder,live+0x40,gbarecomp::CpuMode::Arm) ||
+        has_function(finder,live+0x60,gbarecomp::CpuMode::Arm)!=(fault==0)) return false;
+    bool full_span=false;
+    for (const auto& range : finder.data_ranges())
+        full_span |= range.start==live+0xE0 && range.end==live+0x100;
+    return full_span==(fault==0);
 }
 
 }  // namespace
@@ -209,7 +330,98 @@ static bool thumb_switch(bool halfword, bool literal, bool manual,
     return true;
 }
 
+bool callback_table_transfer(bool thumb, unsigned fault = 0) {
+    std::vector<std::uint8_t> rom(0x140, 0);
+    put32(rom, 0x40, kBase + 0xA0);
+    put32(rom, 0xA0, kBase + 0xC1);
+    put32(rom, 0xA4, kBase + 0xE1);
+    for (unsigned off : {0xC0u, 0xE0u}) {
+        put16(rom, off, 0xB500);  // push {lr}
+        for (unsigned i = 2; i < 10; i += 2) put16(rom, off+i, 0x2000);
+        put16(rom, off+10, 0xBD00); // pop {pc}
+    }
+    if (thumb) {
+        put16(rom, 0, 0x480F); // ldr r0, literal
+        put16(rom, 2, 0x7811); // ldrb r1,[r2]
+        put16(rom, 4, 0x0089); // lsl r1,#2
+        put16(rom, 6, 0x1809); // add r1,r1,r0
+        put16(rom, 8, 0x6808); // ldr r0,[r1]
+        put16(rom, 10, 0xF000);
+        put16(rom, 12, 0xF839); // bl 0x80 (bx r0 veneer)
+        put16(rom, 14, 0x4770); // decoded partial BL target is not veneer
+        put16(rom, 0x80, 0x4700);
+        if (fault==1 || fault==2) {
+            // The prefix's provisional target may coincidentally be BX r0;
+            // the full BL target is an ordinary helper, not that veneer.
+            put16(rom,14,fault==1 ? 0x4700 : 0x4770);
+            put16(rom,0x80,0xB500);
+            put16(rom,0x82,0xBD00);
+        }
+        if (fault==3) {
+            put16(rom,8,0x6809);  // ldr r1,[r1]: asset pointer
+            put16(rom,10,0xBC02); // pop {r1}: replace it with caller return PC
+            put16(rom,12,0x4708); // bx r1 is a return, not the table consumer
+        }
+    } else {
+        put32(rom, 0, 0xE59F1038); // ldr r1,literal
+        put32(rom, 4, fault >= 7 ? 0xE0811000 : 0xE0811100); // index may arrive pre-scaled
+        if (fault >= 9) put32(rom, 4, 0xE1A02000); // mov r2,r0: opaque byte offset
+        put32(rom, 8, fault >= 9 ? 0xE7910002 : 0xE5910000); // indexed or folded word load
+        const uint32_t between[] = {
+            0xE92D4000, // stmdb sp!,{lr}: preserves loaded r0
+            0xE3A00001, // mov r0,#1: clobbers target
+            0xE8BD0001, // ldmia sp!,{r0}: clobbers target
+            0xE5820000, // str r0,[r2]: reads r0, does not write it
+            0xE3500000, // cmp r0,#0: reads r0
+            0xEB00001B, // bl 0x80: unknown callee may clobber target
+            0xE92D4000, // preserve target before non-MOV PC-write rejection
+            0xE92D4000, // unknown index scale across an earlier block
+            0xE92D4000, // same data load without a matching BX consumer
+            0xE92D4000, // register-offset LDR with unknown earlier scale
+            0xE92D4000, // register-offset data load with no branch consumer
+        };
+        put32(rom, 12, between[fault]);
+        put32(rom, 16, 0xE28FE000); // add lr,pc,#0
+        put32(rom, 20, fault == 6 ? 0xE08FF000 : (fault == 8 || fault == 10) ? 0xE12FFF1E : 0xE12FFF10);
+        put32(rom, 0x80, 0xE12FFF1E);
+    }
+    gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
+    finder.set_speculative_literal_harvest(false);
+    finder.add_seed({kBase, thumb ? gbarecomp::CpuMode::Thumb : gbarecomp::CpuMode::Arm, "entry"});
+    finder.run(32);
+    const bool expected = thumb ? fault==0 :
+        fault == 0 || fault == 3 || fault == 4 || fault == 7 || fault == 9;
+    return (finder.auto_jump_tables().size() == (expected ? 1u : 0u)) &&
+           has_function(finder,kBase+0xC0,gbarecomp::CpuMode::Thumb) == expected &&
+           has_function(finder,kBase+0xE0,gbarecomp::CpuMode::Thumb) == expected;
+}
+
 int main() {
+    {
+        std::vector<std::uint8_t> rom(4);
+        put16(rom,0,0x2000);
+        put16(rom,2,0x4770);
+        gbarecomp::FunctionFinder finder(rom.data(),rom.size(),kBase);
+        finder.add_seed({kBase,gbarecomp::CpuMode::Thumb,"entry"});
+        finder.run(4);
+        const auto* entry=find_function(finder,kBase,gbarecomp::CpuMode::Thumb);
+        if (!entry || std::find(entry->alias_entries.begin(),entry->alias_entries.end(),kBase+2) == entry->alias_entries.end()) {
+            std::fprintf(stderr,"Default finder missed interrupt/host-unwind resume boundary\n");
+            return 1;
+        }
+    }
+    for (unsigned fault=0;fault<=3;++fault) {
+        if (!callback_table_transfer(true,fault)) {
+            std::fprintf(stderr,"Thumb BL-pair callback confirmation failed: fault=%u\n",fault);
+            return 1;
+        }
+    }
+    for (unsigned fault = 0; fault < 11; ++fault) {
+        if (!callback_table_transfer(false, fault)) {
+            std::fprintf(stderr,"ARM callback target provenance failed: %u\n", fault);
+            return 1;
+        }
+    }
     for (bool halfword : {false, true}) {
         for (bool literal : {false, true}) {
             for (unsigned fault = 0; fault <= 7; ++fault) {
@@ -415,11 +627,88 @@ int main() {
             return 1;
         }
     }
+    for (bool adr : {false, true}) for (bool tagged : {false, true}) {
+        if (!copied_switch_source(adr, tagged)) {
+            std::fprintf(stderr, "Copied switch ROM targets missing: ADR=%u tag=%u\n", adr, tagged);
+            return 1;
+        }
+    }
+    for (unsigned fault=0;fault<5;++fault) if (!byte_record_callbacks(fault)) {
+        std::fprintf(stderr,"Finite byte-index callback records failed: fault=%u\n",fault);
+        return 1;
+    }
+    for (bool copied : {false,true}) for (unsigned fault=0;fault<5;++fault) {
+        if (!arm_backward_adr_table(copied,fault)) {
+            std::fprintf(stderr,"ARM backward ADR table failed: copied=%u fault=%u\n",copied,fault);
+            return 1;
+        }
+    }
+    for (bool copied : {false,true}) for (unsigned fault=0;fault<4;++fault) {
+        if (!arm_sparse_preceding_table(copied,fault)) {
+            std::fprintf(stderr,"Sparse preceding ARM table failed: copied=%u fault=%u\n",copied,fault);
+            return 1;
+        }
+    }
     for (unsigned fault = 0; fault <= 19; ++fault) {
         if (!referenced_leaf_pair(fault)) {
             std::fprintf(stderr, "Referenced leaf callback pair failed: fault=%u\n", fault);
             return 1;
         }
+    }
+    for (unsigned fault=0; fault<8; ++fault) {
+        std::vector<uint8_t> image(0x400,0);
+        put16(image,0,0x480Fu); put16(image,2,0x4770u);
+        put32(image,0x40,kBase+(fault==6 ? 0x260u : 0x200u));
+        for (unsigned n=0;n<2;++n) {
+            const unsigned pc=0x80+n*8;
+            put16(image,pc,(n && fault!=4) ? 0x688Au : 0x680Au);
+            put16(image,pc+2,fault==2 ? 0x1850u : 0x1851u);
+            put16(image,pc+4,fault==5 ? 0x46C0u : 0xF000u);
+            put16(image,pc+6,uint16_t(0xF800u+((0xC0u-(pc+8u))/2u)));
+        }
+        put16(image,0x90,0x4770u);
+        put16(image,0xC0,fault==1 ? 0x4700u : 0x4708u);
+        const uint32_t first=fault==7 ? 0x100u : 0x300u;
+        const uint32_t second=first+0x20u;
+        put32(image,0x200,(first+1u)-0x200u);
+        put32(image,0x204,0x141u); // unconsumed slot: must stay undiscovered
+        put32(image,0x208,fault==3 ? 0x80000001u : (second+1u)-0x200u);
+        for (auto pc : {first,second,0x340u}) {
+            put16(image,pc,0xB510u);
+            for (unsigned k=2;k<10;k+=2) put16(image,pc+k,0x2001u);
+            put16(image,pc+10,0xBD10u);
+        }
+        gbarecomp::FunctionFinder relative(image.data(),image.size(),kBase);
+        relative.set_speculative_literal_harvest(false);
+        relative.set_aot_scan_range(kBase+0x100u,kBase+0x400u);
+        relative.add_seed({kBase,gbarecomp::CpuMode::Thumb,"table_reference"});
+        relative.add_seed({kBase+0x80u,gbarecomp::CpuMode::Thumb,"relative_consumer"});
+        relative.run(128);
+        const bool expected=fault==0 || fault==7;
+        if ((find_function(relative,kBase+first,gbarecomp::CpuMode::Thumb)!=nullptr)!=expected ||
+            (find_function(relative,kBase+second,gbarecomp::CpuMode::Thumb)!=nullptr)!=expected ||
+            find_function(relative,kBase+0x340u,gbarecomp::CpuMode::Thumb)) {
+            std::fprintf(stderr,"Relative callback slots failed: fault=%u\n",fault);
+            return 1;
+        }
+    }
+    // In a large image, the caller's wrong bias can still point into ROM.
+    // A different declared code copy must supply the callee's source.
+    std::vector<uint8_t> cross_image(0x01000200u,0xFFu);
+    put32(cross_image,0,0xEB3FFFFEu); // BL 03000000 at runtime 02000000
+    put32(cross_image,4,0xE12FFF1Eu);
+    put32(cross_image,0x100u,0xE3A00007u); put32(cross_image,0x104u,0xE12FFF1Eu);
+    gbarecomp::FunctionFinder cross(cross_image.data(),cross_image.size(),kBase);
+    cross.set_speculative_literal_harvest(false);
+    cross.add_code_copy(0x02000000u,kBase,8u,"caller");
+    cross.add_code_copy(0x03000000u,kBase+0x100u,8u,"callee");
+    cross.add_code_copy(0x03000000u,kBase+0x180u,8u,"shadowed mapping");
+    cross.add_seed({0x02000000u,gbarecomp::CpuMode::Arm,"caller"});
+    cross.run(16);
+    const auto* cross_callee=find_function(cross,0x03000000u,gbarecomp::CpuMode::Arm);
+    if (!cross_callee || cross_callee->source_addr!=kBase+0x100u) {
+        std::fprintf(stderr,"Cross-copy call inherited the caller's source bias\n");
+        return 1;
     }
     std::printf("function_finder_tests: PASS\n");
     return 0;
