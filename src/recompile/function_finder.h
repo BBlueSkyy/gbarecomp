@@ -245,6 +245,8 @@ public:
     // Sorted-by-address output.
     const std::vector<Function>& functions() const { return functions_; }
     const FinderStats& stats() const { return stats_; }
+    const std::vector<DataRange>& data_ranges() const { return data_ranges_; }
+    const std::vector<CodeCopyRange>& code_copies() const { return code_copies_; }
 
     // Jump tables recognized automatically during discovery.
     const std::vector<AutoJumpTable>& auto_jump_tables() const {

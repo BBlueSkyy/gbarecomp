@@ -7,8 +7,8 @@ matches between developer machines.
 
 ## Why we need a real BIOS
 
-`gbarecomp` runs the **actual** GBA BIOS, interpreted instruction by
-instruction. We do **not** HLE SWIs. We do **not** stub the BIOS
+`gbarecomp` runs the **actual** GBA BIOS through recompiled native functions
+and its BIOS dispatch table. We do **not** HLE SWIs. We do **not** stub the BIOS
 intro. We do **not** "fast-forward through boot." The whole point of
 a recompiler is faithfulness; the BIOS is part of what we recompile
 through.
@@ -48,6 +48,7 @@ by default. Override with `--bios <path>` if you keep yours elsewhere.
 
 ## What does NOT live here
 
-- Decompiled or "lifted to C" BIOS source. We interpret the original
-  bytes; we don't ship a re-implementation.
+- Generated BIOS source. Recompile the owner's dump with
+  `gba_recompile --bios bios/gba_bios.bin --config bios/gba_bios.toml`
+  into the ignored `src/runtime/generated_bios` directory before building.
 - HLE stubs that pretend to be SWIs.

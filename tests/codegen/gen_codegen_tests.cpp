@@ -43,6 +43,7 @@ armv4t::Instr decode_one(const TestCase& tc) {
 
 int emit(FILE* f, const char* out_path) {
     const std::unordered_set<uint32_t> thumb_alu_immediate_override_pcs = {
+        0x03007D3Eu,0x0800103Eu,
         0x0800E2D2u,
         0x0800E31Cu,
         0x080B291Cu,
@@ -70,7 +71,7 @@ int emit(FILE* f, const char* out_path) {
     for (std::size_t i = 0; i < kTestCasesCount; ++i) {
         const TestCase& tc = kTestCases[i];
         TestCase canonical = tc;
-        if (tc.runtime_pc_base) canonical.pc = 0x03000000u;
+        if (tc.runtime_pc_base) canonical.pc = tc.pc>=0x08000000u ? 0x08000000u : 0x03000000u;
         armv4t::Instr ins = decode_one(canonical);
         armv4t::CodegenCtx ctx{};
         ctx.current_function_addr = canonical.pc;
@@ -185,8 +186,10 @@ int emit(FILE* f, const char* out_path) {
         fn.mode = gbarecomp::CpuMode::Thumb;
         fn.alias_entries = {fn.addr+2, fn.addr+4};
         const std::unordered_map<uint64_t, std::string> empty;
+        const std::unordered_set<uint64_t> reviewed={
+            (uint64_t(0x03001002u)<<1)|1u,(uint64_t(0x08001002u)<<1)|1u};
         const auto body = gbarecomp::emit_function_body_str(fn, image, sizeof(image),
-            fn.source_addr, empty, nullptr, nullptr, true);
+            fn.source_addr, empty, nullptr, &reviewed, true);
         std::fprintf(f, "extern \"C\" void ram_mutation_fixture_%u(void) {\n%s}\n",
                      variant, body.c_str());
     }

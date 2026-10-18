@@ -634,6 +634,37 @@ uint32_t GbaBus::access_cycles(uint32_t addr, uint8_t width,
     return waits_access_cycles(*waits_, addr, width, sequential);
 }
 
+const uint8_t* GbaBus::native_code_view(uint32_t address,uint32_t size) const {
+    if (!size) return nullptr;
+    const uint32_t region=address>>24;
+    if (uint64_t(address)+size>(uint64_t(region+1u)<<24)) return nullptr;
+    static thread_local uint8_t scratch[64];
+    if (region==2u || region==3u) {
+        const uint32_t mask=region==2u ? 0x3FFFFu : 0x7FFFu;
+        const uint8_t* ram=region==2u ? ewram_.data() : iwram_.data();
+        const uint32_t offset=address & mask;
+        if (size<=mask+1u-offset) return ram+offset;
+        if (size>sizeof(scratch)) return nullptr;
+        for (uint32_t n=0;n<size;++n) scratch[n]=ram[(offset+n)&mask];
+        return scratch;
+    }
+    const uint32_t offset=address & 0x01FFFFFFu;
+    if (region<8u || region>13u || !matrix_.active() ||
+        offset>=GbaMatrixMemory::kApertureSize || !rom_) return nullptr;
+    std::size_t first=0,last=0;
+    if (!matrix_.translate(offset,1,&first) ||
+        !matrix_.translate(uint64_t(offset)+size-1u,1,&last)) return nullptr;
+    if (size<=GbaMatrixMemory::kPageSize-(offset & (GbaMatrixMemory::kPageSize-1u)) ||
+        (size<=GbaMatrixMemory::kPageSize && last==first+size-1u)) return rom_+first;
+    if (size>sizeof(scratch)) return nullptr;
+    for (uint32_t n=0;n<size;++n) {
+        std::size_t physical=0;
+        if (!matrix_.translate(offset+n,1,&physical)) return nullptr;
+        scratch[n]=rom_[physical];
+    }
+    return scratch;
+}
+
 void GbaBus::log_unmapped(uint32_t addr, uint32_t value, bool is_write, uint8_t width) {
     ++unmapped_count_;
     // Keep the counter hot-path cheap by default. Full stderr logging is

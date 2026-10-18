@@ -207,6 +207,29 @@ std::string emit_function_body_str(
     if (runtime_ram_placement) {
         ctx.runtime_pc_base = "_ram_base";
         appendf(out, "    const uint32_t _ram_base = g_runtime_native_ram_base;\n");
+        // The same fragment may be placed at several guest PCs. Preserve only
+        // exact reviewed mod sites in its live bus class, including a fresh
+        // call whose instruction is an interior alias of this fragment.
+        std::vector<uint32_t> reviewed;
+        if (mod_function_hook_keys) for (uint64_t key : *mod_function_hook_keys) {
+            if (bool(key & 1u)!=ctx.current_function_thumb) continue;
+            const uint32_t site=uint32_t(key>>1),region=site>>24;
+            const bool ram=(fn.addr>>24)==2u || (fn.addr>>24)==3u;
+            if (ram ? (region==2u || region==3u) :
+                (region>=8u && region<=13u && (site & 0x01FFFFFFu)<0x2000u))
+                reviewed.push_back(site);
+        }
+        if (!reviewed.empty()) {
+            std::sort(reviewed.begin(),reviewed.end());
+            appendf(out,"    const uint32_t _native_entry = _ram_base + "
+                "(g_runtime_resume_pc ? g_runtime_resume_pc - 0x%08Xu : 0u);\n"
+                "    switch (_native_entry) {\n",fn.addr);
+            for (uint32_t site : reviewed) appendf(out,"    case 0x%08Xu:\n",site);
+            appendf(out,"        if (gba_mod_function_entry(_native_entry, %du, &g_cpu)) {\n"
+                "            g_runtime_resume_pc = 0u; return;\n"
+                "        }\n        break;\n    default: break;\n    }\n",
+                ctx.current_function_thumb ? 1 : 0);
+        }
     }
     ctx.alu_immediate_override_pcs = alu_immediate_override_pcs;
     const uint32_t fn_source_addr = fn.source_addr ? fn.source_addr : fn.addr;
@@ -419,7 +442,7 @@ std::string emit_function_body_str(
             // each one leaked a call-return entry until the 1024-entry abort).
             // Relocated bodies (source_addr != addr) keep call semantics: the
             // target bytes are not in this image at the target's guest address.
-            if (fn_source_addr == fn.addr) {
+            if (!runtime_ram_placement && fn_source_addr == fn.addr) {
                 bool is_bl = false;
                 uint32_t bl_target = 0;
                 if (scan_ins.op == armv4t::IrOp::BL) {
@@ -527,7 +550,7 @@ std::string emit_function_body_str(
     const uint64_t mod_hook_key =
         (static_cast<uint64_t>(fn.addr) << 1u) |
         (fn.mode == CpuMode::Thumb ? 1u : 0u);
-    if (mod_function_hook_keys &&
+    if (!runtime_ram_placement && mod_function_hook_keys &&
         mod_function_hook_keys->count(mod_hook_key) != 0) {
         appendf(out,
             "    if (gba_mod_function_entry(0x%08Xu, %du, &g_cpu)) return;\n",

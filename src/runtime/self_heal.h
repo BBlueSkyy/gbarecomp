@@ -35,7 +35,8 @@ bool self_heal_any_misses();
 // Distinct missed PCs bridged this session.
 std::uint32_t self_heal_distinct_misses();
 
-// Total guest instructions executed in the interpreter bridge this session.
+// Total guest instructions interpreted this session, including explicit forced
+// execution and reference runs which do not create a dispatch miss.
 std::uint64_t self_heal_interpreted_insns();
 
 // Emit the coverage-honesty banner to stdout and, if any misses occurred and

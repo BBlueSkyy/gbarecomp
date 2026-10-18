@@ -117,7 +117,76 @@ static bool literal_callback(unsigned fault) {
     if (fault == 4) finder.add_data_range(kBase + 0x40, kBase + 0x4C, "data");
     finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "entry"});
     finder.run(64);
-    return has_function(finder, kBase + 0x40, gbarecomp::CpuMode::Thumb) == (fault == 0);
+    return has_function(finder, kBase + 0x40, gbarecomp::CpuMode::Thumb) ==
+        (fault == 0 || fault == 1 || fault == 3);
+}
+
+static bool copied_switch_source(bool adr, bool tagged) {
+    std::vector<std::uint8_t> rom(0x200, 0);
+    put16(rom, 0, adr ? 0xA03F : 0x4800); // referenced copy source at +0x100
+    put16(rom, 2, 0x4770);
+    put32(rom, 4, kBase + 0x100 + unsigned(tagged));
+    put16(rom, 0x100, 0xB500); // push {lr}
+    put16(rom, 0x102, 0x1C02); // mov r2,r0
+    put16(rom, 0x104, 0x2801); // cmp r0,#1
+    put16(rom, 0x106, 0xD81B); // bhi default
+    put16(rom, 0x108, 0x0080); // lsl r0,r0,#2
+    put16(rom, 0x10A, 0x4905); // literal names an absolute ROM table
+    put16(rom, 0x10C, 0x1840);
+    put16(rom, 0x10E, 0x6800);
+    put16(rom, 0x110, 0x4687); // mov pc,r0
+    put32(rom, 0x120, kBase + 0x124);
+    put32(rom, 0x124, kBase + 0x180);
+    put32(rom, 0x128, kBase + 0x190);
+    for (unsigned pc : {0x140u, 0x180u, 0x190u}) {
+        put16(rom, pc, 0x2001);
+        put16(rom, pc + 2, 0xBD00);
+    }
+    gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
+    finder.set_speculative_literal_harvest(false);
+    finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "entry"});
+    finder.run(64);
+    auto emitted = [&](uint32_t pc) {
+        for (const auto& fn : finder.functions()) {
+            if (pc >= fn.addr && pc < fn.end_addr) return true;
+            for (const auto& span : fn.switch_blocks)
+                if (pc >= span.start && pc < span.end) return true;
+        }
+        return false;
+    };
+    return emitted(kBase + 0x100) && emitted(kBase + 0x180) &&
+           emitted(kBase + 0x190) && finder.stats().auto_jump_tables == 1;
+}
+
+static bool byte_record_callbacks(unsigned fault) {
+    std::vector<std::uint8_t> rom(0x300,0);
+    put16(rom,0,0xB500); put16(rom,2,0x4D0F);
+    put16(rom,4,fault==1 ? 0x8821 : 0x7821); // byte index has 256 possible values
+    put16(rom,6,fault==2 ? 0x0050 : 0x0048); // i*2 (or unrelated index)
+    put16(rom,8,0x1840); put16(rom,10,0x00C0); // (i*2+i)*8 = i*24
+    put16(rom,12,0x1D29); put16(rom,14,0x1840); // table + i*24 + field 4
+    put16(rom,16,0x6800);
+    put16(rom,18,fault==4 ? 0xBC01 : 0x2800); // compare preserves target; POP replaces it
+    put16(rom,20,0xD00C); put16(rom,22,0xF000); put16(rom,24,0xF823);
+    put16(rom,26,0xBD00); put16(rom,0x30,0xBD00);
+    put32(rom,0x40,kBase+0x100);
+    put16(rom,0x60,fault==3 ? 0x4708 : 0x4700);
+    // Null first/intermediate slots do not terminate the finite-domain search.
+    put32(rom,0x100+24+4,kBase+0x201);
+    put32(rom,0x100+72+4,kBase+0x241);
+    put32(rom,0x100+24+8,kBase+0x281); // unrelated field must not be read
+    for (unsigned pc : {0x200u,0x240u,0x280u}) {
+        put16(rom,pc,0xB500);
+        for (unsigned n=2;n<10;n+=2) put16(rom,pc+n,0x2000);
+        put16(rom,pc+10,0xBD00);
+    }
+    gbarecomp::FunctionFinder finder(rom.data(),rom.size(),kBase);
+    finder.set_speculative_literal_harvest(false);
+    finder.add_seed({kBase,gbarecomp::CpuMode::Thumb,"entry"});
+    finder.run(64);
+    return has_function(finder,kBase+0x200,gbarecomp::CpuMode::Thumb)==(fault==0) &&
+        has_function(finder,kBase+0x240,gbarecomp::CpuMode::Thumb)==(fault==0) &&
+        !has_function(finder,kBase+0x280,gbarecomp::CpuMode::Thumb);
 }
 
 }  // namespace
@@ -229,6 +298,18 @@ bool callback_table_transfer(bool thumb, unsigned fault = 0) {
         put16(rom, 12, 0xF839); // bl 0x80 (bx r0 veneer)
         put16(rom, 14, 0x4770); // decoded partial BL target is not veneer
         put16(rom, 0x80, 0x4700);
+        if (fault==1 || fault==2) {
+            // The prefix's provisional target may coincidentally be BX r0;
+            // the full BL target is an ordinary helper, not that veneer.
+            put16(rom,14,fault==1 ? 0x4700 : 0x4770);
+            put16(rom,0x80,0xB500);
+            put16(rom,0x82,0xBD00);
+        }
+        if (fault==3) {
+            put16(rom,8,0x6809);  // ldr r1,[r1]: asset pointer
+            put16(rom,10,0xBC02); // pop {r1}: replace it with caller return PC
+            put16(rom,12,0x4708); // bx r1 is a return, not the table consumer
+        }
     } else {
         put32(rom, 0, 0xE59F1038); // ldr r1,literal
         put32(rom, 4, fault >= 7 ? 0xE0811000 : 0xE0811100); // index may arrive pre-scaled
@@ -256,7 +337,8 @@ bool callback_table_transfer(bool thumb, unsigned fault = 0) {
     finder.set_speculative_literal_harvest(false);
     finder.add_seed({kBase, thumb ? gbarecomp::CpuMode::Thumb : gbarecomp::CpuMode::Arm, "entry"});
     finder.run(32);
-    const bool expected = thumb || fault == 0 || fault == 3 || fault == 4 || fault == 7 || fault == 9;
+    const bool expected = thumb ? fault==0 :
+        fault == 0 || fault == 3 || fault == 4 || fault == 7 || fault == 9;
     return (finder.auto_jump_tables().size() == (expected ? 1u : 0u)) &&
            has_function(finder,kBase+0xC0,gbarecomp::CpuMode::Thumb) == expected &&
            has_function(finder,kBase+0xE0,gbarecomp::CpuMode::Thumb) == expected;
@@ -276,9 +358,11 @@ int main() {
             return 1;
         }
     }
-    if (!callback_table_transfer(true)) {
-        std::fprintf(stderr,"Thumb BL-pair callback table was not recovered\n");
-        return 1;
+    for (unsigned fault=0;fault<=3;++fault) {
+        if (!callback_table_transfer(true,fault)) {
+            std::fprintf(stderr,"Thumb BL-pair callback confirmation failed: fault=%u\n",fault);
+            return 1;
+        }
     }
     for (unsigned fault = 0; fault < 11; ++fault) {
         if (!callback_table_transfer(false, fault)) {
@@ -490,6 +574,16 @@ int main() {
             std::fprintf(stderr, "AOT callback literal failed: fault=%u\n", fault);
             return 1;
         }
+    }
+    for (bool adr : {false, true}) for (bool tagged : {false, true}) {
+        if (!copied_switch_source(adr, tagged)) {
+            std::fprintf(stderr, "Copied switch ROM targets missing: ADR=%u tag=%u\n", adr, tagged);
+            return 1;
+        }
+    }
+    for (unsigned fault=0;fault<5;++fault) if (!byte_record_callbacks(fault)) {
+        std::fprintf(stderr,"Finite byte-index callback records failed: fault=%u\n",fault);
+        return 1;
     }
     for (unsigned fault = 0; fault <= 19; ++fault) {
         if (!referenced_leaf_pair(fault)) {

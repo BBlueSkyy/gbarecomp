@@ -437,6 +437,36 @@ void test_matrix_memory_mapper() {
     check_eq("matrix", "waitstate_mirror", bus.read8(0x0C000000u), 0xC3u);
     check_eq("matrix", "mirror_map_command_count",
              bus.matrix().map_command_count(), 2u);
+    const auto waits_before=*bus.wait_table();
+    rom[0x020011F0u]=0xD7u;
+    rom[0x200u]=0xE8u;
+    auto view=bus.native_code_view(0x0C0001F0u,32);
+    check_bool("native_code_view","noncontiguous_matrix_pages",view!=nullptr,true);
+    if (view) {
+        check_eq("native_code_view","mapped_tail",view[0],0xD7u);
+        check_eq("native_code_view","next_page",view[16],0xE8u);
+    }
+    rom[0x200u]=0xE9u;
+    view=bus.native_code_view(0x080001F0u,32);
+    if (view) check_eq("native_code_view","live_mapping_bytes",view[16],0xE9u);
+    check_bool("native_code_view","outside_aperture",bus.native_code_view(0x08002000u,4)==nullptr,true);
+    bus.iwram_ptr()[0x7FFEu]=0xA1u; bus.iwram_ptr()[0]=0xB2u;
+    view=bus.native_code_view(0x03007FFEu,4);
+    check_bool("native_code_view","iwram_mirror_wrap",view!=nullptr,true);
+    if (view) { check_eq("native_code_view","iwram_tail",view[0],0xA1u);
+                check_eq("native_code_view","iwram_head",view[2],0xB2u); }
+    bus.ewram_ptr()[0x3FFFEu]=0xC3u; bus.ewram_ptr()[0]=0xD4u;
+    view=bus.native_code_view(0x0203FFFEu,4);
+    check_bool("native_code_view","ewram_mirror_wrap",view!=nullptr,true);
+    if (view) { check_eq("native_code_view","ewram_tail",view[0],0xC3u);
+                check_eq("native_code_view","ewram_head",view[2],0xD4u); }
+    check_bool("native_code_view","cross_region",bus.native_code_view(0x03FFFFFEu,4)==nullptr,true);
+    check_bool("native_code_view","bios_excluded",bus.native_code_view(0,4)==nullptr,true);
+    check_bool("native_code_view","io_excluded",bus.native_code_view(0x04000000u,4)==nullptr,true);
+    check_bool("native_code_view","waits_unchanged",
+        std::memcmp(&waits_before,bus.wait_table(),sizeof(waits_before))==0,true);
+    check_eq("native_code_view","mapper_unchanged",bus.matrix().map_command_count(),2u);
+    check_eq("native_code_view","unmapped_unchanged",bus.unmapped_count(),std::size_t(0));
 }
 
 void test_flash1m_beats_flash() {

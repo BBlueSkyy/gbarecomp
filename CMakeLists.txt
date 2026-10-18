@@ -902,6 +902,18 @@ add_executable(ram_templates_tests tests/recompile/ram_templates_test.cpp)
 target_link_libraries(ram_templates_tests PRIVATE gbarecomp_recompile_core)
 add_test(NAME ram_templates_tests COMMAND ram_templates_tests)
 
+add_executable(runtime_coverage_tests tests/runtime/runtime_coverage_test.cpp)
+# This small fixture does not pull run_game; rescan runtime after armv4t so
+# one-pass archive linkers can find the runtime-owned BIOS dispatch table.
+target_link_libraries(runtime_coverage_tests PRIVATE
+    gbarecomp_runtime gbarecomp_armv4t gbarecomp_runtime)
+add_test(NAME runtime_coverage_tests COMMAND runtime_coverage_tests)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME strict_interpreter_tests COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime/strict_interpreter_test.py"
+        "$<TARGET_FILE:runtime_coverage_tests>")
+endif()
+
 add_executable(link_branch_tests tests/recompile/link_branch_test.cpp)
 target_link_libraries(link_branch_tests PRIVATE gbarecomp_recompile_core)
 add_test(NAME link_branch_tests COMMAND link_branch_tests)

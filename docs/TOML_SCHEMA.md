@@ -117,8 +117,8 @@ reason = "literal pool walked as code by finder pre-vX.Y"
 | `load_address` | int hex | Where the binary's first byte maps in CPU memory. |
 | `size`         | int hex | Byte size of the binary (must match the file on disk). |
 | `entry_pc`     | int hex | Initial PC. Seeded as `[[extra_func]]` automatically; declaring it again is a redundant no-op. |
-| `speculative_literal_harvest` | bool | Optional, default `true`. Harvest plausible callback pointers from PC-relative literal loads. Set `false` for evidence-driven strict-static corpora where runtime-observed `[[extra_func]]` roots are preferred over speculative reachability. Direct branch discovery is unchanged. |
-| `aot_scan_start` / `aot_scan_end` | int hex | Optional half-open executable-ROM range. Reachable PC-relative literals can identify callback tables or directly reference a tagged Thumb PUSH-LR callback passed to a helper. Referenced ROM objects outside the range also qualify when their first two words are distinct Thumb callbacks: at least one PUSH-LR entry, paired with another PUSH-LR entry or a short stackless RAM-global leaf (store and BX LR, no calls or other branches). Separately address-taken leaves must use the exact RAM-global literal corroborated by a descriptor. Only the two descriptor words are inspected; no table end is guessed. Keep compressed graphics and other assets outside the executable range. Omit both fields to disable this discovery. |
+| `speculative_literal_harvest` | bool | Optional, default `true`. Harvest plausible callback pointers from PC-relative literal loads. Setting `false` disables weak pointer candidates. Referenced Thumb PUSH-LR entries with validated instruction bytes remain discoverable, including untagged copy sources and ADR references, so their absolute ROM branches and switch cases are compiled too. Direct branch discovery is unchanged. |
+| `aot_scan_start` / `aot_scan_end` | int hex | Optional half-open executable-ROM range. Reachable PC-relative literals can identify callback tables. Referenced ROM objects outside the range also qualify when their first two words are distinct Thumb callbacks: at least one PUSH-LR entry, paired with another PUSH-LR entry or a short stackless RAM-global leaf (store and BX LR, no calls or other branches). Separately address-taken leaves must use the exact RAM-global literal corroborated by a descriptor. Only the two descriptor words are inspected; no table end is guessed. Keep compressed graphics and other assets outside the executable range. Omit both fields to disable table/descriptor discovery; strongly qualified directly referenced Thumb entries remain enabled. A configured range also bounds those entry candidates. |
 | `static_resume_all` | bool | Optional, default `true`. Add a static dispatch/resume entry for every aligned instruction inside each emitted native body. IRQ/SWI returns and host-stack unwinds may resume at any instruction boundary. Explicitly disabling this is for discovery experiments and does not guarantee strict end-to-end AOT coverage. |
 | `codegen_shards` | int | Optional cartridge override, range 2..256. When omitted or `0`, the recompiler chooses an adaptive power-of-two count from 2..64. Cartridge output is never monolithic. `1` is accepted only as legacy input and upgraded to the adaptive count with a warning. Stable address hashing and write-if-changed output keep unrelated shards untouched when a reviewed seed is added. BIOS output remains one small translation unit. |
 
@@ -291,7 +291,24 @@ entry and checks each instruction again before execution. Changed or unknown
 bytes return to normal dispatch and remain a loud strict-static miss unless
 another AOT fragment matches. Matching has no bus-read or timing side effects;
 it never decodes or compiles code at runtime. No additional configuration is
-required. BIOS compilation remains separate.
+required. On Matrix cartridges, the active banked aperture uses the same byte
+verification with cartridge fetch timing and live PC placement. Mapped pages can
+be noncontiguous. Independently linked siblings of a known copied startup module
+are discovered from its exact ARM mode/MSR prefix with separate source mappings;
+these additional bodies enter the guarded catalog. Unknown bytes cannot fall
+back to a stale fixed-address native
+entry. Reviewed mod hooks and immediate overrides still require their exact
+live guest PC. BIOS compilation remains separate.
+
+`GBARECOMP_STRICT_STATIC=1` rejects explicit interpreter bridges and forced
+interpreter hooks as well as dispatch misses. Coverage counts forced and direct
+bridge instructions; zero misses alone does not imply `FULLY_STATIC`.
+
+Callback fields in record arrays are also recovered when a reachable dispatcher
+forms their exact stride from an unsigned byte index, loads the selected field
+and branches through it. Discovery checks all 256 possible byte values, accepts
+only validated function prologues, and skips null or non-code slots. It does not
+guess a record count from a sentinel or classify the other fields as code.
 
 ### `[[jump_table]]` (zero or more)
 

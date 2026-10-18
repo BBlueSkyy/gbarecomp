@@ -118,6 +118,7 @@ const char* trace_kind_name(uint32_t kind) {
         case RUNTIME_TRACE_IRQ:       return "irq";
         case RUNTIME_TRACE_CALL:      return "call";
         case RUNTIME_TRACE_MEM_READ:  return "mem_r";
+        case RUNTIME_TRACE_CODE_MISMATCH: return "code_mismatch";
         default:                      return "unknown";
     }
 }
@@ -864,17 +865,34 @@ struct NativeRamCache {
 };
 NativeRamCache g_native_ram_cache[256];
 
+bool guarded_code_address(uint32_t pc, bool thumb) {
+    return g_native_ram_template_count && g_runtime_ram_code_view &&
+        g_runtime_ram_code_view(pc,thumb ? 2u : 4u);
+}
+
 const RuntimeNativeRamEntry* lookup_native_ram(uint32_t pc, bool thumb,
                                                uint32_t* base_out) {
-    if ((pc >> 24 != 2u && pc >> 24 != 3u) ||
+    const auto region=pc >> 24;
+    const bool cartridge=region>=8u && region<=13u;
+    if ((region != 2u && region != 3u && !cartridge) ||
         (pc & (thumb ? 1u : 3u)) || !g_runtime_ram_code_view ||
         !g_native_ram_entry_count) return nullptr;
     auto matches = [&](const RuntimeNativeRamEntry& e, uint32_t base) {
         if (e.template_index >= g_native_ram_template_count) return false;
         const auto& t = g_native_ram_templates[e.template_index];
-        if ((t.thumb != 0) != thumb || e.offset >= t.size) return false;
+        if ((t.thumb != 0) != thumb || e.offset >= t.size ||
+            (cartridge ? !t.cart_fn : !t.fn)) return false;
         const auto* bytes = g_runtime_ram_code_view(base, t.size);
-        return bytes && std::memcmp(bytes, t.bytes, t.size) == 0;
+        if (!bytes) return false;
+        if (std::memcmp(bytes,t.bytes,t.size)==0) return true;
+        if (runtime_trace_enabled()) {
+            for (uint32_t n=0;n<t.size;++n) if (bytes[n]!=t.bytes[n]) {
+                runtime_trace_event(RUNTIME_TRACE_CODE_MISMATCH,pc,base+n,
+                                    bytes[n],t.bytes[n]);
+                break;
+            }
+        }
+        return false;
     };
     auto& cached = g_native_ram_cache[((pc >> 1) ^ (pc >> 11)) & 255u];
     if (cached.pc == pc && cached.entry && matches(*cached.entry, cached.base)) {
@@ -938,9 +956,12 @@ const DispatchEntry* dispatch_resolve(uint32_t target_pc) {
         // Capture placement before entering the body; nested IRQs may select
         // another template. A resumed body derives it again from live RAM.
         g_runtime_native_ram_base = ram_base;
-        g_runtime_resume_pc = ram->offset ? 0x03000000u + ram->offset : 0u;
+        const bool cartridge=pc>=0x08000000u;
+        g_runtime_resume_pc = ram->offset
+            ? (cartridge ? 0x08000000u : 0x03000000u)+ram->offset : 0u;
         static GBARECOMP_TAIL_ARG_TLS DispatchEntry ram_entry;
-        ram_entry = {pc, uint8_t(thumb), uint8_t(ram->offset != 0), t.fn};
+        ram_entry = {pc, uint8_t(thumb), uint8_t(ram->offset != 0),
+                     cartridge ? t.cart_fn : t.fn};
         return &ram_entry;
     }
     if (pc >= 0x02000000u && pc < 0x04000000u && g_runtime_ram_dispatch_hook &&
@@ -958,7 +979,10 @@ const DispatchEntry* dispatch_resolve(uint32_t target_pc) {
         if (g_runtime_ram_dispatch_hook(pc, thumb ? 1 : 0)) return nullptr;
     }
     const DispatchEntry* entry = nullptr;
-    if (pc < kBiosRegionEnd) {
+    if (guarded_code_address(pc,thumb)) {
+        // No byte-verified body matched. A fixed mutable-code entry describes
+        // the old bytes and must not silently execute after a code rewrite.
+    } else if (pc < kBiosRegionEnd) {
         entry = lookup_in(
             kBiosDispatchTable, kBiosDispatchTableLen, pc, thumb);
     } else {
@@ -1025,6 +1049,7 @@ extern "C" int runtime_has_static_entry(uint32_t pc, int thumb) {
     uint32_t a = pc & ~1u;
     uint32_t base = 0;
     if (lookup_native_ram(a, thumb != 0, &base)) return 1;
+    if (guarded_code_address(a,thumb != 0)) return 0;
     const DispatchEntry* entry = (a < kBiosRegionEnd)
         ? lookup_in(kBiosDispatchTable, kBiosDispatchTableLen, a, thumb != 0)
         : lookup_in(kDispatchTable, kDispatchTableLen, a, thumb != 0);

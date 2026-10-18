@@ -190,6 +190,11 @@ public:
     const uint8_t* rom_ptr() const { return rom_; }
     std::size_t    rom_size() const { return rom_size_; }
 
+    // Side-effect-free bytes for guarded native code. Supports RAM mirrors and
+    // the active Matrix cartridge aperture. Borrowed until the next call; a
+    // wrapped/noncontiguous fragment uses a small thread-local snapshot.
+    const uint8_t* native_code_view(uint32_t address,uint32_t size) const;
+
     const uint8_t* ewram_ptr() const { return ewram_.data(); }
     const uint8_t* iwram_ptr() const { return iwram_.data(); }
     const uint8_t* pal_ptr()   const { return pal_.data();   }

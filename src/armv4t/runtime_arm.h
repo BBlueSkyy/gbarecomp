@@ -209,7 +209,7 @@ void runtime_dispatch_miss(uint32_t target_pc);
 #endif
 extern GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_tail_arg;
 
-// AOT bodies for exact ROM instruction fragments copied to moving RAM slots.
+// AOT bodies for exact ROM instruction fragments in mutable execution windows.
 // The byte view is observational: no bus read, open-bus update or cycle charge.
 typedef const uint8_t* (*RuntimeRamCodeView)(uint32_t address, uint32_t size);
 extern RuntimeRamCodeView g_runtime_ram_code_view;
@@ -218,6 +218,7 @@ typedef struct RuntimeNativeRamTemplate {
     uint32_t size;
     uint8_t thumb;
     void (*fn)(void);
+    void (*cart_fn)(void); // optional body with live cartridge fetch/prefetch
 } RuntimeNativeRamTemplate;
 typedef struct RuntimeNativeRamEntry {
     uint64_t key;  // (raw opcode << 1) | thumb, sorted ascending
@@ -262,8 +263,8 @@ void runtime_swi_tail(void);                     // runtime_swi(g_runtime_tail_a
 extern int g_force_interp;
 void runtime_force_interp_step(void);
 
-// True iff a STATIC (recompiled) dispatch-table entry exists for this guest PC
-// + instruction-set state. The on-miss bridge uses it to detect re-entry into
+// True iff a STATIC AOT entry (fixed table or byte-verified code template)
+// exists for this guest PC + instruction-set state. The bridge uses it to detect re-entry into
 // statically recompiled code and hand control back (heal-to-static) when it has
 // no reliable stop address (a top-level / exception-return miss).
 int runtime_has_static_entry(uint32_t pc, int thumb);
