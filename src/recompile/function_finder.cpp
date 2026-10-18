@@ -83,6 +83,13 @@ void FunctionFinder::add_seed(const FunctionSeed& seed) {
     seeds_.push_back(seed);
 }
 
+void FunctionFinder::add_thumb_relative_table(uint32_t addr, uint32_t stride,
+                                             uint32_t count,
+                                             uint32_t target_base) {
+    thumb_relative_tables_.push_back({addr, stride, count, target_base});
+    add_data_range(addr, addr + stride * count, "Thumb relative jump_table");
+}
+
 void FunctionFinder::add_data_range(uint32_t start, uint32_t end,
                                      const std::string& note) {
     data_ranges_.push_back(DataRange{start, end, note});
@@ -541,6 +548,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         // false at scale time; the table-former re-checks reg_bound[src_reg]
         // so the late bound still sizes the table. 0xFF = no known source.
         uint8_t  src_reg = 0xFF;
+        uint64_t relative_bound_epoch = 0;
     };
     RegScaled reg_scaled[16];
     struct RegTableAddr {  // Rd = base + (scaled index)
@@ -565,12 +573,19 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         uint32_t max_index = 0;
     };
     RegBound reg_bound[16];
+    // Relative-table proofs cannot survive a call: argument registers and
+    // flags may be clobbered. Track provenance separately so this narrow
+    // recognizer does not change the existing abs32 detector's behavior.
+    uint64_t relative_epoch = 1;
+    uint64_t relative_bound_epoch[16] = {};
+    uint64_t relative_base_epoch[16] = {};
     // Inverted-guard bound parked for this seed (see header). Re-seed it
     // so the dispatch's scale->add->load chain can size the table.
     {
         auto it = branch_target_bounds_.find(entry_addr);
         if (it != branch_target_bounds_.end() && it->second.reg < 16) {
             reg_bound[it->second.reg] = {true, it->second.max_index};
+            relative_bound_epoch[it->second.reg] = relative_epoch;
         }
     }
     struct LastCmp {  // most recent `CMP Ri,#imm`, consumed by the next branch
@@ -598,6 +613,21 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         uint32_t count       = 0;
     };
     PendingJt pend;
+
+    // A narrow, adjacent load/scale/ADD-pc chain. Unlike abs32 tables these
+    // entries are unsigned halfword offsets from the *unaligned* Thumb PC.
+    struct PendingRelativeJt {
+        bool active = false;
+        bool scaled = false;
+        uint8_t dest = 0;
+        uint32_t base = 0, stride = 0, count = 0, next_pc = 0;
+    };
+    PendingRelativeJt relative;
+    std::vector<uint32_t> switch_targets;
+    std::unordered_set<uint32_t> switch_target_set;
+    std::size_t next_switch_target = 0;
+    uint32_t block_start = pc;
+    bool in_switch_block = false;
 
     struct RegSym {
         bool    known = false;
@@ -1107,7 +1137,86 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         return true;
     };
 
-    while (count++ < kMaxInstrs && can_read_walk_at(pc, step)) {
+    auto emit_thumb_relative_table = [&](uint32_t base, uint32_t stride,
+                                         uint32_t entries, uint32_t site,
+                                         bool manual) {
+        if ((stride != 1 && stride != 2) || entries == 0 ||
+            (stride == 2 && (base & 1u)) ||
+            entries > rom_size_ / stride ||
+            static_cast<uint64_t>(base) + entries * stride > 0xFFFFFFFFull ||
+            !can_read_at(base, entries * stride)) return;
+        const uint32_t end = base + entries * stride;
+        std::vector<uint32_t> targets;
+        for (uint32_t i = 0; i < entries; ++i) {
+            uint32_t src = 0;
+            if (!map_addr_to_source(base + i * stride, &src)) return;
+            const std::size_t off = src - rom_base_;
+            uint32_t value = rom_[off];
+            if (stride == 2) value |= static_cast<uint32_t>(rom_[off + 1]) << 8;
+            const uint64_t raw = static_cast<uint64_t>(site) + 4u + 2u * value;
+            if (raw > 0xFFFFFFFFull) return;
+            const uint32_t target = static_cast<uint32_t>(raw);
+            // Validate the entire bounded table before committing any state.
+            if ((target >= base && target < end) ||
+                !looks_like_code(target, CpuMode::Thumb, false)) return;
+            targets.push_back(target);
+        }
+        if (!manual && jt_seen_bases_.insert(base).second) {
+            add_data_range(base, end, "auto Thumb relative jump_table");
+            auto_jump_tables_.push_back(
+                AutoJumpTable{base, stride, entries, site, CpuMode::Thumb,
+                              false, true});
+            ++stats_.auto_jump_tables;
+            stats_.auto_jump_table_targets += entries;
+        }
+        for (uint32_t target : targets) {
+            if (switch_target_set.insert(target).second) {
+                switch_targets.push_back(target);
+                fn.alias_entries.push_back(target);
+            }
+        }
+    };
+
+    auto next_switch_block = [&]() -> bool {
+        if (in_switch_block && pc > block_start)
+            fn.switch_blocks.push_back({block_start, pc});
+        while (next_switch_target < switch_targets.size()) {
+            const uint32_t target = switch_targets[next_switch_target++];
+            bool covered = target >= entry_addr && target < fn.end_addr;
+            for (const auto& block : fn.switch_blocks)
+                covered |= target >= block.start && target < block.end;
+            if (covered) continue;
+            pc = block_start = target;
+            in_switch_block = true;
+            count = 0;  // retain the normal instruction limit per linear walk
+            // Each case is a separate CFG entry. No constants, bounds, or
+            // pending loads from the dispatcher dominate an arbitrary case.
+            for (unsigned r = 0; r < 16; ++r) {
+                reg_const[r] = {};
+                reg_scaled[r] = {};
+                reg_table[r] = {};
+                reg_bound[r] = {};
+                reg_sym[r] = {};
+            }
+            clear_mem_const();
+            last_cmp = {};
+            pend = {};
+            relative = {};
+            ++relative_epoch;
+            return true;
+        }
+        return false;
+    };
+
+    while (true) {
+        if (count++ >= kMaxInstrs) {
+            if (next_switch_block()) continue;
+            break;
+        }
+        if (!can_read_walk_at(pc, step)) {
+            if (next_switch_block()) continue;
+            break;
+        }
         // If we ever decode from inside a data_range, that's a hard
         // error — TOML asserted "no code here" but our walk got here
         // anyway. Recorded; finder continues so multiple collisions
@@ -1126,7 +1235,81 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
 
         if (ins.is_undefined) {
             ++stats_.undefined_instr_count;
+            if (next_switch_block()) continue;
             break;
+        }
+
+        if (entry_mode == CpuMode::Thumb) {
+            const auto& operand = ins.op2;
+            const bool add_pc = ins.op == armv4t::IrOp::ADD &&
+                ins.rd == 15 && ins.rn == 15 &&
+                operand.kind == armv4t::Op2::Kind::Shifted &&
+                operand.shifted.type == armv4t::ShiftType::LSL &&
+                !operand.shifted.by_register && operand.shifted.imm_or_rs == 0;
+            if (add_pc) {
+                bool manual = false;
+                for (const auto& table : thumb_relative_tables_) {
+                    if (table.target_base == pc + 4u) {
+                        emit_thumb_relative_table(table.addr, table.stride,
+                                                  table.count, pc, true);
+                        manual = true;
+                    }
+                }
+                if (!manual && jump_table_detection_enabled() &&
+                    relative.active && relative.scaled &&
+                    relative.next_pc == pc && operand.shifted.rm == relative.dest) {
+                    ++stats_.jt_confirmations;
+                    emit_thumb_relative_table(relative.base, relative.stride,
+                                              relative.count, pc, false);
+                }
+            }
+            if (relative.active) {
+                if (pc == relative.next_pc && !relative.scaled &&
+                    ins.op == armv4t::IrOp::MOV && ins.rd == relative.dest &&
+                    operand.kind == armv4t::Op2::Kind::Shifted &&
+                    operand.shifted.rm == relative.dest &&
+                    operand.shifted.type == armv4t::ShiftType::LSL &&
+                    !operand.shifted.by_register && operand.shifted.imm_or_rs == 1) {
+                    relative.scaled = true;
+                    relative.next_pc = pc + 2u;
+                } else {
+                    relative.active = false;
+                }
+            }
+            if ((ins.op == armv4t::IrOp::LDRB || ins.op == armv4t::IrOp::LDRH) &&
+                ins.mem.by_register && ins.mem.pre_indexed && ins.mem.add &&
+                !ins.mem.writeback && ins.mem.rn < 15 && ins.rd < 15 &&
+                ins.mem.reg_offset.rm < 15 &&
+                !ins.mem.reg_offset.by_register &&
+                ins.mem.reg_offset.type == armv4t::ShiftType::LSL &&
+                ins.mem.reg_offset.imm_or_rs == 0 && reg_const[ins.mem.rn].known &&
+                relative_base_epoch[ins.mem.rn] == relative_epoch) {
+                const uint8_t index = ins.mem.reg_offset.rm;
+                const uint32_t stride = ins.op == armv4t::IrOp::LDRB ? 1u : 2u;
+                bool bounded = reg_bound[index].known &&
+                    relative_bound_epoch[index] == relative_epoch;
+                uint32_t maxi = reg_bound[index].max_index;
+                // Thumb LDRH has an unscaled register offset. GCC scales
+                // the bounded logical index into a byte offset beforehand.
+                if (stride == 2) {
+                    bounded = reg_scaled[index].known &&
+                        reg_scaled[index].shift == 1 && reg_scaled[index].bound_known &&
+                        reg_scaled[index].relative_bound_epoch == relative_epoch;
+                    maxi = reg_scaled[index].max_index;
+                    const auto source = reg_scaled[index].src_reg;
+                    if (!bounded && reg_scaled[index].known &&
+                        reg_scaled[index].shift == 1 && source < 16 &&
+                        reg_bound[source].known &&
+                        relative_bound_epoch[source] == relative_epoch) {
+                        bounded = true;
+                        maxi = reg_bound[source].max_index;
+                    }
+                }
+                if (bounded && maxi < 0xFFFFFFFFu) {
+                    relative = {true, false, ins.rd, reg_const[ins.mem.rn].value,
+                                stride, maxi + 1u, pc + 2u};
+                }
+            }
         }
 
         // Record direct branch targets. The decoder fills
@@ -1443,6 +1626,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 if (ins.cond == armv4t::Cond::HI ||
                     ins.cond == armv4t::Cond::CS) {
                     reg_bound[last_cmp.reg] = {true, maxi};
+                    relative_bound_epoch[last_cmp.reg] = relative_epoch;
                 } else if (ins.branch_target != 0) {
                     branch_target_bounds_[ins.branch_target] =
                         SeedBound{last_cmp.reg, maxi};
@@ -1670,6 +1854,12 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             }
             invalidate_mem_base(ins.rd);
             invalidate_sym_base(ins.rd);
+            relative_base_epoch[ins.rd] =
+                reg_const[ins.rd].known &&
+                ((ins.op == armv4t::IrOp::ADD && ins.rn == 15 &&
+                  ins.op2.kind == armv4t::Op2::Kind::Imm) ||
+                 (ins.op == armv4t::IrOp::LDR && ins.mem.rn == 15 &&
+                  !ins.mem.by_register)) ? relative_epoch : 0;
         }
 
         // Maintain the jump-table address trackers (independent of the
@@ -1712,6 +1902,8 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 reg_scaled[ins.rd].shift = o.shifted.imm_or_rs;
                 reg_scaled[ins.rd].bound_known = false;
                 reg_scaled[ins.rd].src_reg = o.shifted.rm;
+                reg_scaled[ins.rd].relative_bound_epoch =
+                    relative_bound_epoch[o.shifted.rm];
                 if (reg_bound[o.shifted.rm].known) {
                     reg_scaled[ins.rd].bound_known = true;
                     reg_scaled[ins.rd].max_index =
@@ -1804,12 +1996,17 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             reg_sym[ins.mem.rn].known = false;
             reg_scaled[ins.mem.rn].known = false;
             reg_table[ins.mem.rn].known = false;
+            relative_bound_epoch[ins.mem.rn] = 0;
             invalidate_mem_base(ins.mem.rn);
             invalidate_sym_base(ins.mem.rn);
         }
 
         pc += step;
-        fn.end_addr = pc;
+        if (ins.is_call || ins.op == armv4t::IrOp::SWI) {
+            ++relative_epoch;
+            relative.active = false;
+        }
+        if (!in_switch_block) fn.end_addr = pc;
 
         // A conditional indirect transfer is not a terminator when
         // its condition fails. Because the finder stops at indirects,
@@ -1826,6 +2023,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         //   3. An unconditional branch (B with cond=AL) — we'll
         //      reach the target by adding it to the worklist.
         if (ins.is_return || ins.is_indirect) {
+            if (next_switch_block()) continue;
             break;
         }
         const bool unconditional_branch =
@@ -1833,9 +2031,15 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             ins.cond == armv4t::Cond::AL &&
             !ins.is_call;
         if (unconditional_branch) {
+            if (next_switch_block()) continue;
             break;
         }
     }
+
+    // Preserve the final case's exact extent (including a budget-limited walk).
+    if (in_switch_block && pc > block_start &&
+        (fn.switch_blocks.empty() || fn.switch_blocks.back().start != block_start))
+        fn.switch_blocks.push_back({block_start, pc});
 
     if (current_walk_dropped_) {
         // A speculative literal-pool function entered a data_range — not
@@ -2180,6 +2384,10 @@ void FunctionFinder::run(std::size_t max_functions) {
                  pc += step) {
                 f.alias_entries.push_back(pc);
             }
+            for (const auto& block : f.switch_blocks) {
+                for (uint32_t pc = block.start; pc < block.end; pc += step)
+                    f.alias_entries.push_back(pc);
+            }
             if (!f.alias_entries.empty()) {
                 std::sort(f.alias_entries.begin(), f.alias_entries.end());
                 f.alias_entries.erase(
@@ -2197,6 +2405,25 @@ void FunctionFinder::run(std::size_t max_functions) {
     }
 
     // Stats
+    // Only attach resume labels whose instructions are in emitted spans.
+    stats_.alias_entries_total = 0;
+    stats_.alias_hosts_total = 0;
+    for (Function& fn : functions_) {
+        std::erase_if(fn.alias_entries, [&](uint32_t target) {
+            if (target >= fn.addr && target < fn.end_addr) return false;
+            for (const auto& block : fn.switch_blocks)
+                if (target >= block.start && target < block.end) return false;
+            return true;
+        });
+        if (!static_resume_all_) {
+            std::sort(fn.alias_entries.begin(), fn.alias_entries.end());
+            fn.alias_entries.erase(std::unique(fn.alias_entries.begin(),
+                                              fn.alias_entries.end()),
+                                   fn.alias_entries.end());
+        }
+        stats_.alias_entries_total += fn.alias_entries.size();
+        if (!fn.alias_entries.empty()) ++stats_.alias_hosts_total;
+    }
     stats_.functions_total = functions_.size();
     stats_.functions_arm = 0;
     stats_.functions_thumb = 0;

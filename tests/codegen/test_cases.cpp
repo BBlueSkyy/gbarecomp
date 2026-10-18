@@ -41,6 +41,11 @@ const TestMemInit mem_word_at_010C[] = {
     {0x010Cu, 0x12345678u},  // ARM LDR r0,[pc,#4] @ pc=0x100 → ea = pc+8+4 = 0x10C
 };
 
+const TestMemInit mem_thumb_switch_entries[] = {
+    {0x2000u, 0x18110A03u},  // unsigned byte offsets, LoG I's first four cases
+    {0x2004u, 0x80010102u},  // unsigned halfwords; both exceed one byte
+};
+
 const TestMemInit mem_hword_neg_at_3000[] = {
     {0x3000u, 0x0000FF80u},  // aligned LDRSH reads 0xFF80 → sext16 = 0xFFFFFF80
 };
@@ -1160,6 +1165,28 @@ const TestCase kTestCases[] = {
       {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0, 0x100u},
       (1u<<5) | MODE_SYSTEM,  // T=1, Z=0
       nullptr, 0, /*branches*/ false, 0, 0 },
+
+    // GCC Thumb relative switch: isolate every stage against the interpreter.
+    { "thumb_switch_adr", true, 0x080014B0u, 0xA301u,
+      {}, (1u<<5) | MODE_SYSTEM, nullptr, 0, false, 0, 0 },
+    { "thumb_switch_ldrb", true, 0x108u, 0x5C1Bu,
+      {1,0,0,0x2000u}, (1u<<5) | MODE_SYSTEM,
+      mem_thumb_switch_entries, 2, false, 0, 0 },
+    { "thumb_switch_ldrh_unsigned", true, 0x108u, 0x5A5Bu,
+      {0,2,0,0x2004u}, (1u<<5) | MODE_SYSTEM,
+      mem_thumb_switch_entries, 2, false, 0, 0 },
+    { "thumb_switch_lsl_entry", true, 0x080014B4u, 0x005Bu,
+      {0,0,0,3}, (1u<<5) | MODE_SYSTEM, nullptr, 0, false, 0, 0 },
+    { "thumb_switch_add_pc_unaligned", true, 0x080014B6u, 0x449Fu,
+      {0,0,0,6}, (1u<<5) | MODE_SYSTEM, nullptr, 0, true, 0, 0 },
+    { "thumb_switch_add_pc_halfword", true, 0x080014B6u, 0x449Fu,
+      {0,0,0,0x10002u}, (1u<<5) | MODE_SYSTEM, nullptr, 0, true, 0, 0 },
+    { "thumb_switch_cmp_default", true, 0x080014ACu, 0x2807u,
+      {7}, (1u<<5) | MODE_SYSTEM, nullptr, 0, false, 0, 0 },
+    { "thumb_switch_bcs_default", true, 0x080014AEu, 0xD233u,
+      {7}, (1u<<5) | (1u<<29) | MODE_SYSTEM, nullptr, 0, true, 0, 0 },
+    { "thumb_switch_bcs_in_range", true, 0x080014AEu, 0xD233u,
+      {6}, (1u<<5) | MODE_SYSTEM, nullptr, 0, false, 0, 0 },
 };
 
 const std::size_t kTestCasesCount =

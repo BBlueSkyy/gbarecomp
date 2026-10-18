@@ -26,6 +26,8 @@ enum class JumpTableFormat : uint8_t {
     Abs16 = 1,
     PcrelArm = 2,
     PcrelThumb = 3,
+    U8RelThumb = 4,
+    U16RelThumb = 5,
 };
 
 enum class JumpTableEntriesMode : uint8_t {
@@ -125,6 +127,7 @@ struct ConfigCodeCopy {
 
 struct ConfigJumpTable {
     uint32_t            addr = 0;
+    uint32_t            base = 0;  // required for u8/u16_rel_thumb: ADD pc PC + 4
     uint32_t            stride = 0;
     uint32_t            count = 0;
     JumpTableFormat     format = JumpTableFormat::Abs32;

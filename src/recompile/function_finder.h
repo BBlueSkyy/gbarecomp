@@ -56,6 +56,11 @@ struct FunctionSeed {
     bool alias_candidate = false;
 };
 
+struct FunctionBlock {
+    uint32_t start;
+    uint32_t end;  // exclusive; only decoded code, never inline table bytes
+};
+
 // Output: one entry per discovered function.
 struct Function {
     uint32_t addr;
@@ -88,6 +93,10 @@ struct Function {
     // instead each is a labelled re-entry point and the body emits a resume
     // prologue that goto's the right label. Sorted ascending, deduped.
     std::vector<uint32_t> alias_entries;
+    // Switch cases owned by this host, beyond its initial linear block.
+    // Keep their exact spans: expanding end_addr would decode inline data or
+    // swallow unrelated function roots between the dispatcher and its cases.
+    std::vector<FunctionBlock> switch_blocks;
     // Set during alias consolidation to mark this entry for removal from the
     // function list (it was rolled into its host's alias_entries).
     bool is_alias = false;
@@ -98,11 +107,11 @@ struct Function {
 // detector against the manual ground-truth set. See MC-HP-000.
 struct AutoJumpTable {
     uint32_t base;          // table base address (guest)
-    uint32_t stride;        // bytes per entry (4 = abs32)
+    uint32_t stride;        // bytes per entry (4 = abs32; 1/2 = unsigned Thumb offset)
     uint32_t count;         // entries emitted
-    uint32_t site_pc;       // PC of the indexed load that revealed the table
+    uint32_t site_pc;       // PC of the consuming indirect branch
     CpuMode  site_mode;     // mode of the dispatching code
-    bool     interworking;  // BX/veneer (per-entry bit0 mode) vs MOV pc (mode = site_mode)
+    bool     interworking;  // BX/veneer vs MOV/ADD pc (mode = site_mode)
     bool     bounded;       // count came from an exact CMP bound (vs walk)
 };
 
@@ -185,6 +194,11 @@ public:
     // seed's mode + name wins.
     void add_seed(const FunctionSeed& seed);
 
+    // Manual unsigned Thumb offset table; target = target_base + 2 * entry.
+    // target_base is the ADD pc instruction's address + 4.
+    void add_thumb_relative_table(uint32_t addr, uint32_t stride,
+                                  uint32_t count, uint32_t target_base);
+
     // Register a byte range as data — the finder will hard-error
     // if control flow ever enters it. Caller supplies `note` for
     // the diagnostic; `origin_kind` is "data_range" for explicit
@@ -264,6 +278,10 @@ private:
     // confirmation can fire from several overlapping walks). Keeps the
     // emitted / overlap / rejected tallies counting distinct tables.
     std::unordered_set<uint32_t> jt_seen_bases_;
+    struct ThumbRelativeTable {
+        uint32_t addr, stride, count, target_base;
+    };
+    std::vector<ThumbRelativeTable> thumb_relative_tables_;
     // CMP-bound carried across an inverted switch guard. For the
     // `CMP Ri,#N; B{ls,cc} <dispatch>; B <default>` idiom the indexed
     // dispatch lives at the BRANCH TARGET, which the finder walks as its

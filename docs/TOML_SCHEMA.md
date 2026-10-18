@@ -96,7 +96,7 @@ note          = "ROM code copied to IWRAM before execution"
 addr         = 0x00000168
 stride       = 4
 count        = 43
-format       = "abs32"           # abs32 | abs16 | pcrel_thumb | pcrel_arm
+format       = "abs32"           # also abs16, pcrel_thumb, pcrel_arm, u8_rel_thumb, u16_rel_thumb
 entries_mode = "arm"
 name         = "swi_dispatch_table"
 note         = "SWI 0x00..0x2A handlers"
@@ -289,7 +289,8 @@ covering them).
 | `addr`         | int hex | yes      | First byte of the table. |
 | `stride`       | int     | yes      | Bytes per entry. Typical: 4. |
 | `count`        | int     | yes      | Number of entries. |
-| `format`       | string  | yes      | One of `abs32`, `abs16`, `pcrel_thumb`, `pcrel_arm`. |
+| `format`       | string  | yes      | `abs32`, `abs16`, `pcrel_thumb`, `pcrel_arm`, `u8_rel_thumb`, or `u16_rel_thumb`. |
+| `base`         | int hex | relative Thumb only | Address of the consuming `ADD pc,Rt` instruction + 4. |
 | `entries_mode` | string  | yes      | `"arm"`, `"thumb"`, or `"auto"`. See below. |
 | `name`         | string  | no       | Table label (documentation). |
 | `note`         | string  | no       | Free-form. |
@@ -302,6 +303,25 @@ Format semantics:
   `(entry_address + value) & ~1`, decoded as THUMB. The low interworking
   bit is normalized out of the instruction address.
 - `pcrel_arm` — `int32_t` per entry; target = `entry_address + value`, decoded as ARM.
+- `u8_rel_thumb` / `u16_rel_thumb` — unsigned byte / halfword entries;
+  target = `base + 2 * value`, decoded as THUMB. `stride` must be 1 / 2,
+  respectively; halfword tables must be aligned. `count` must be nonzero.
+  `base` is the Thumb PC value at `ADD pc,Rt`, **without word alignment**.
+  These targets become case blocks and resume entries of the dispatcher host.
+  Discovery recognizes the bounded `ADR` or literal `LDR`, indexed `LDRB` /
+  `LDRH`, `LSLS #1`, `ADD pc` idiom automatically. Manual entries supply the
+  exact table count when its guard cannot be recovered; they are consumed at
+  `base - 4`, which must be a reachable Thumb `ADD pc,Rt` instruction.
+
+```toml
+[[jump_table]]
+addr = 0x080014B8
+base = 0x080014BA # ADD pc,r3 at 0x080014B6 reads PC + 4
+stride = 1
+count = 7
+format = "u8_rel_thumb"
+entries_mode = "thumb"
+```
 
 `entries_mode` semantics:
 
@@ -327,6 +347,8 @@ Mode-keyword combinations:
 | `abs16`         | `"arm"`, `"thumb"`                |
 | `pcrel_arm`     | `"arm"` (must match format)       |
 | `pcrel_thumb`   | `"thumb"` (must match format)     |
+| `u8_rel_thumb`  | `"thumb"` (must match format)     |
+| `u16_rel_thumb` | `"thumb"` (must match format)     |
 
 `abs16` does not support `"auto"`: 16-bit pointers don't span an
 interworking address space on the GBA.

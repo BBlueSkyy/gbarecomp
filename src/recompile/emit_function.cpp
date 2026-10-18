@@ -8,6 +8,7 @@
 #include "emit_function.h"
 
 #include <cstdarg>
+#include <algorithm>
 #include <unordered_set>
 
 #include "arm_codegen.h"
@@ -204,6 +205,18 @@ std::string emit_function_body_str(
     ctx.current_function_thumb = (fn.mode == CpuMode::Thumb);
     ctx.alu_immediate_override_pcs = alu_immediate_override_pcs;
     const uint32_t fn_source_addr = fn.source_addr ? fn.source_addr : fn.addr;
+    std::vector<FunctionBlock> blocks = fn.switch_blocks;
+    blocks.push_back({fn.addr, fn.end_addr});
+    std::sort(blocks.begin(), blocks.end(), [](const auto& a, const auto& b) {
+        return a.start < b.start;
+    });
+    std::vector<FunctionBlock> spans;
+    for (const auto& block : blocks) {
+        if (!spans.empty() && block.start <= spans.back().end)
+            spans.back().end = std::max(spans.back().end, block.end);
+        else
+            spans.push_back(block);
+    }
 
     auto source_offset_for = [&](uint32_t guest_pc, uint32_t len,
                                  std::size_t* out_off) -> bool {
@@ -358,112 +371,119 @@ std::string emit_function_body_str(
         }
     }
 
-    for (uint32_t scan_pc = fn.addr; scan_pc < fn.end_addr; scan_pc += step) {
-        std::size_t scan_off = 0;
-        if (!source_offset_for(scan_pc, step, &scan_off)) break;
-        armv4t::Instr scan_ins;
-        if (fn.mode == CpuMode::Thumb) {
-            uint16_t hw = static_cast<uint16_t>(
-                rom[scan_off] | (rom[scan_off + 1] << 8));
-            scan_ins = armv4t::ThumbDecoder::decode(hw, scan_pc);
-        } else {
-            uint32_t w = static_cast<uint32_t>(rom[scan_off])
-                | (static_cast<uint32_t>(rom[scan_off + 1]) << 8)
-                | (static_cast<uint32_t>(rom[scan_off + 2]) << 16)
-                | (static_cast<uint32_t>(rom[scan_off + 3]) << 24);
-            scan_ins = armv4t::ArmDecoder::decode(w, scan_pc);
-        }
-        if (scan_ins.op == armv4t::IrOp::B &&
-            scan_ins.branch_target >= fn.addr &&
-            scan_ins.branch_target < fn.end_addr &&
-            scan_ins.branch_target < scan_pc) {
-            backward_targets.insert(scan_ins.branch_target);
-            // Stage 2: this back-edge closes an idle-elision candidate iff the
-            // straight-line body [target, scan_pc) is all idle-simple, i.e. no
-            // unsafe instruction precedes it back to the target. (last_unsafe_pc
-            // currently reflects instructions strictly before scan_pc, since it
-            // is updated at the end of the step below.)
-            if (last_unsafe_pc < static_cast<int64_t>(scan_ins.branch_target)) {
-                idle_backedge_pcs.insert(scan_pc);
+    for (const auto& span : spans) {
+        // Disjoint cases have independent register provenance and idle-loop state.
+        have_prev_scan_ins = span.start == fn.addr && have_prev_scan_ins;
+        for (bool& alias : lr_alias) alias = false;
+        lr_alias[14] = true;
+        last_unsafe_pc = static_cast<int64_t>(span.start) - 1;
+        for (uint32_t scan_pc = span.start; scan_pc < span.end; scan_pc += step) {
+            std::size_t scan_off = 0;
+            if (!source_offset_for(scan_pc, step, &scan_off)) break;
+            armv4t::Instr scan_ins;
+            if (fn.mode == CpuMode::Thumb) {
+                uint16_t hw = static_cast<uint16_t>(
+                    rom[scan_off] | (rom[scan_off + 1] << 8));
+                scan_ins = armv4t::ThumbDecoder::decode(hw, scan_pc);
+            } else {
+                uint32_t w = static_cast<uint32_t>(rom[scan_off])
+                    | (static_cast<uint32_t>(rom[scan_off + 1]) << 8)
+                    | (static_cast<uint32_t>(rom[scan_off + 2]) << 16)
+                    | (static_cast<uint32_t>(rom[scan_off + 3]) << 24);
+                scan_ins = armv4t::ArmDecoder::decode(w, scan_pc);
             }
-        }
-        // Far-branch BLs: the link value is dead at the target, so no guest
-        // return can consume it. Lower them as branches so they never leave a
-        // host call-return frame behind (MKSC's per-frame main loops re-enter
-        // their loop head with `bl`; under suspended multiplayer dispatch
-        // each one leaked a call-return entry until the 1024-entry abort).
-        // Relocated bodies (source_addr != addr) keep call semantics: the
-        // target bytes are not in this image at the target's guest address.
-        if (fn_source_addr == fn.addr) {
-            bool is_bl = false;
-            uint32_t bl_target = 0;
-            if (scan_ins.op == armv4t::IrOp::BL) {
-                is_bl = true;
-                bl_target = scan_ins.branch_target;
-            } else if (scan_ins.op == armv4t::IrOp::BL_suffix) {
-                armv4t::Instr prefix;
-                if (decode_image_instr(rom, rom_size, rom_base, scan_pc - 2u,
-                                       true, &prefix) &&
-                    prefix.op == armv4t::IrOp::BL_prefix) {
-                    is_bl = true;
-                    bl_target = (prefix.branch_target + scan_ins.swi_imm) & ~1u;
+            if (scan_ins.op == armv4t::IrOp::B &&
+                scan_ins.branch_target >= span.start &&
+                scan_ins.branch_target < span.end &&
+                scan_ins.branch_target < scan_pc) {
+                backward_targets.insert(scan_ins.branch_target);
+                // Stage 2: this back-edge closes an idle-elision candidate iff the
+                // straight-line body [target, scan_pc) is all idle-simple, i.e. no
+                // unsafe instruction precedes it back to the target. (last_unsafe_pc
+                // currently reflects instructions strictly before scan_pc, since it
+                // is updated at the end of the step below.)
+                if (last_unsafe_pc < static_cast<int64_t>(scan_ins.branch_target)) {
+                    idle_backedge_pcs.insert(scan_pc);
                 }
             }
-            const uint32_t link = scan_pc + step;
-            if (is_bl && bl_target != link &&
-                link_register_dead_at(rom, rom_size, rom_base, bl_target,
-                                      fn.mode == CpuMode::Thumb)) {
-                link_branch_targets[scan_pc] = bl_target;
-                if (bl_target >= fn.addr && bl_target < fn.end_addr &&
-                    bl_target < scan_pc)
-                    backward_targets.insert(bl_target);
+            // Far-branch BLs: the link value is dead at the target, so no guest
+            // return can consume it. Lower them as branches so they never leave a
+            // host call-return frame behind (MKSC's per-frame main loops re-enter
+            // their loop head with `bl`; under suspended multiplayer dispatch
+            // each one leaked a call-return entry until the 1024-entry abort).
+            // Relocated bodies (source_addr != addr) keep call semantics: the
+            // target bytes are not in this image at the target's guest address.
+            if (fn_source_addr == fn.addr) {
+                bool is_bl = false;
+                uint32_t bl_target = 0;
+                if (scan_ins.op == armv4t::IrOp::BL) {
+                    is_bl = true;
+                    bl_target = scan_ins.branch_target;
+                } else if (scan_ins.op == armv4t::IrOp::BL_suffix) {
+                    armv4t::Instr prefix;
+                    if (decode_image_instr(rom, rom_size, rom_base, scan_pc - 2u,
+                                           true, &prefix) &&
+                        prefix.op == armv4t::IrOp::BL_prefix) {
+                        is_bl = true;
+                        bl_target = (prefix.branch_target + scan_ins.swi_imm) & ~1u;
+                    }
+                }
+                const uint32_t link = scan_pc + step;
+                if (is_bl && bl_target != link &&
+                    link_register_dead_at(rom, rom_size, rom_base, bl_target,
+                                          fn.mode == CpuMode::Thumb)) {
+                    link_branch_targets[scan_pc] = bl_target;
+                    if (bl_target >= span.start && bl_target < span.end &&
+                        bl_target < scan_pc)
+                        backward_targets.insert(bl_target);
+                }
             }
-        }
-        if (scan_ins.op == armv4t::IrOp::BX &&
-            have_prev_scan_ins &&
-            prev_scan_ins.op == armv4t::IrOp::LDM &&
-            prev_scan_ins.block.load &&
-            prev_scan_ins.block.writeback &&
-            prev_scan_ins.block.rn == 13 &&
-            scan_ins.rm < 16 &&
-            (prev_scan_ins.block.reg_list &
-                static_cast<uint16_t>(1u << scan_ins.rm)) != 0) {
-            bx_c_return_pcs.insert(scan_pc);
-        }
-        if (scan_ins.op == armv4t::IrOp::BX &&
-            scan_ins.rm < 16 &&
-            lr_alias[scan_ins.rm]) {
-            bx_c_return_pcs.insert(scan_pc);
+            if (scan_ins.op == armv4t::IrOp::BX &&
+                have_prev_scan_ins &&
+                prev_scan_ins.op == armv4t::IrOp::LDM &&
+                prev_scan_ins.block.load &&
+                prev_scan_ins.block.writeback &&
+                prev_scan_ins.block.rn == 13 &&
+                scan_ins.rm < 16 &&
+                (prev_scan_ins.block.reg_list &
+                    static_cast<uint16_t>(1u << scan_ins.rm)) != 0) {
+                bx_c_return_pcs.insert(scan_pc);
+            }
+            if (scan_ins.op == armv4t::IrOp::BX &&
+                scan_ins.rm < 16 &&
+                lr_alias[scan_ins.rm]) {
+                bx_c_return_pcs.insert(scan_pc);
+            }
+
+            bool sets_lr_alias = false;
+            uint8_t alias_dst = 0;
+            uint8_t alias_src = 0;
+            if (plain_reg_source(scan_ins, &alias_src) &&
+                scan_ins.rd < 16 &&
+                scan_ins.cond == armv4t::Cond::AL &&
+                alias_src < 16 &&
+                lr_alias[alias_src]) {
+                sets_lr_alias = true;
+                alias_dst = scan_ins.rd;
+            }
+            invalidate_written_aliases(scan_ins, lr_alias);
+            if (sets_lr_alias) {
+                lr_alias[alias_dst] = true;
+            }
+
+            // Stage 2: record the highest PC of any non-idle-simple instruction so
+            // a later backward branch can test body cleanliness in O(1). Done after
+            // the back-edge check above so the back-edge branch (itself unsafe) does
+            // not disqualify the loop it closes.
+            if (!is_idle_simple(scan_ins)) {
+                last_unsafe_pc = static_cast<int64_t>(scan_pc);
+            }
+
+            prev_scan_ins = scan_ins;
+            have_prev_scan_ins = true;
         }
 
-        bool sets_lr_alias = false;
-        uint8_t alias_dst = 0;
-        uint8_t alias_src = 0;
-        if (plain_reg_source(scan_ins, &alias_src) &&
-            scan_ins.rd < 16 &&
-            scan_ins.cond == armv4t::Cond::AL &&
-            alias_src < 16 &&
-            lr_alias[alias_src]) {
-            sets_lr_alias = true;
-            alias_dst = scan_ins.rd;
-        }
-        invalidate_written_aliases(scan_ins, lr_alias);
-        if (sets_lr_alias) {
-            lr_alias[alias_dst] = true;
-        }
-
-        // Stage 2: record the highest PC of any non-idle-simple instruction so
-        // a later backward branch can test body cleanliness in O(1). Done after
-        // the back-edge check above so the back-edge branch (itself unsafe) does
-        // not disqualify the loop it closes.
-        if (!is_idle_simple(scan_ins)) {
-            last_unsafe_pc = static_cast<int64_t>(scan_pc);
-        }
-
-        prev_scan_ins = scan_ins;
-        have_prev_scan_ins = true;
     }
-
     ctx.idle_backedge_pcs = &idle_backedge_pcs;
     ctx.link_branch_targets = &link_branch_targets;
 
@@ -516,70 +536,75 @@ std::string emit_function_body_str(
     appendf(out,
         "    if (g_runtime_fn_entry_hook) g_runtime_fn_entry_hook(0x%08Xu);\n",
         fn.addr);
-    while (pc < fn.end_addr) {
-        std::size_t off = 0;
-        if (!source_offset_for(pc, step, &off)) break;
-        armv4t::Instr ins;
-        if (fn.mode == CpuMode::Thumb) {
-            uint16_t hw = static_cast<uint16_t>(
-                rom[off] | (rom[off + 1] << 8));
-            ins = armv4t::ThumbDecoder::decode(hw, pc);
-        } else {
-            uint32_t w = static_cast<uint32_t>(rom[off])
-                | (static_cast<uint32_t>(rom[off + 1]) << 8)
-                | (static_cast<uint32_t>(rom[off + 2]) << 16)
-                | (static_cast<uint32_t>(rom[off + 3]) << 24);
-            ins = armv4t::ArmDecoder::decode(w, pc);
-        }
+    for (const auto& span : spans) {
+        pc = span.start;
+        ctx.current_function_addr = span.start;
+        ctx.current_function_end_addr = span.end;
+        while (pc < span.end) {
+            std::size_t off = 0;
+            if (!source_offset_for(pc, step, &off)) break;
+            armv4t::Instr ins;
+            if (fn.mode == CpuMode::Thumb) {
+                uint16_t hw = static_cast<uint16_t>(
+                    rom[off] | (rom[off + 1] << 8));
+                ins = armv4t::ThumbDecoder::decode(hw, pc);
+            } else {
+                uint32_t w = static_cast<uint32_t>(rom[off])
+                    | (static_cast<uint32_t>(rom[off + 1]) << 8)
+                    | (static_cast<uint32_t>(rom[off + 2]) << 16)
+                    | (static_cast<uint32_t>(rom[off + 3]) << 24);
+                ins = armv4t::ArmDecoder::decode(w, pc);
+            }
 
-        if (backward_targets.count(pc) != 0 || alias_set.count(pc) != 0) {
-            appendf(out, "L_%08X:\n", pc);
-        }
+            if (backward_targets.count(pc) != 0 || alias_set.count(pc) != 0) {
+                appendf(out, "L_%08X:\n", pc);
+            }
 
-        std::string line = armv4t::format_ir(ins);
-        appendf(out, "    /* %08X  %s */\n", pc, line.c_str());
+            std::string line = armv4t::format_ir(ins);
+            appendf(out, "    /* %08X  %s */\n", pc, line.c_str());
 
-        bool ni = false;
-        ctx.force_bx_c_return = bx_c_return_pcs.count(pc) != 0;
-        std::string emitted = armv4t::ArmCodegen::emit_instr(ins, ctx, &ni);
-        if (has_aliases) {
-            // Block-scope each instruction so the resume prologue's forward
-            // goto crosses no in-scope local initialization (goto-legal C++).
-            out += "    {\n";
-            out += emitted;
-            out += "    }\n";
-        } else {
-            out += emitted;
+            bool ni = false;
+            ctx.force_bx_c_return = bx_c_return_pcs.count(pc) != 0;
+            std::string emitted = armv4t::ArmCodegen::emit_instr(ins, ctx, &ni);
+            if (has_aliases) {
+                // Block-scope each instruction so the resume prologue's forward
+                // goto crosses no in-scope local initialization (goto-legal C++).
+                out += "    {\n";
+                out += emitted;
+                out += "    }\n";
+            } else {
+                out += emitted;
+            }
+            // emit_instr already handles all return-shaped flows
+            // (branches set PC + dispatch + return; SWI sets PC +
+            // returns; LDM with PC in list returns; LDR PC dispatches).
+            // For non-PC-writing instructions execution falls through
+            // to the next emitted block.
+            (void)ni;  // tracked for diagnostics; abort path is in the emit.
+            pc += step;
         }
-        // emit_instr already handles all return-shaped flows
-        // (branches set PC + dispatch + return; SWI sets PC +
-        // returns; LDM with PC in list returns; LDR PC dispatches).
-        // For non-PC-writing instructions execution falls through
-        // to the next emitted block.
-        (void)ni;  // tracked for diagnostics; abort path is in the emit.
-        pc += step;
+        // Fall-through tail-call dispatch.
+        //
+        // The function body may end for two reasons:
+        //   1. A natural terminator (return, unconditional B, indirect
+        //      branch, undefined). emit_instr() already emitted PC update
+        //      + `return;`, so this trailing dispatch is dead code.
+        //   2. The decode loop hit `fn.end_addr` (clipped to the next
+        //      function's start by the finder). Execution is supposed
+        //      to FALL THROUGH into the next function — typically when
+        //      two callers enter a shared suffix at different points
+        //      (e.g., the BIOS's reset_vector and SWI 0x26's handler
+        //      share code starting at 0x8C).
+        // In case 2, without this dispatch the runtime would return to
+        // the exec loop with PC unchanged and re-dispatch the same
+        // function forever. The trailing dispatch hands control to the
+        // adjacent function via the dispatch table.
+        appendf(out,
+            "    /* fall-through to 0x%08X */\n"
+            "    g_cpu.R[15] = 0x%08Xu;\n"
+            "    GBARECOMP_TAIL_DISPATCH(0x%08Xu);\n",
+            span.end, span.end, span.end);
     }
-    // Fall-through tail-call dispatch.
-    //
-    // The function body may end for two reasons:
-    //   1. A natural terminator (return, unconditional B, indirect
-    //      branch, undefined). emit_instr() already emitted PC update
-    //      + `return;`, so this trailing dispatch is dead code.
-    //   2. The decode loop hit `fn.end_addr` (clipped to the next
-    //      function's start by the finder). Execution is supposed
-    //      to FALL THROUGH into the next function — typically when
-    //      two callers enter a shared suffix at different points
-    //      (e.g., the BIOS's reset_vector and SWI 0x26's handler
-    //      share code starting at 0x8C).
-    // In case 2, without this dispatch the runtime would return to
-    // the exec loop with PC unchanged and re-dispatch the same
-    // function forever. The trailing dispatch hands control to the
-    // adjacent function via the dispatch table.
-    appendf(out,
-        "    /* fall-through to 0x%08X */\n"
-        "    g_cpu.R[15] = 0x%08Xu;\n"
-        "    GBARECOMP_TAIL_DISPATCH(0x%08Xu);\n",
-        fn.end_addr, fn.end_addr, fn.end_addr);
 
     return out;
 }

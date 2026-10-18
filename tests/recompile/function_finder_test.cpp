@@ -1,4 +1,6 @@
 #include "function_finder.h"
+#include "emit_function.h"
+#include <algorithm>
 
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +42,87 @@ const gbarecomp::Function* find_function(
 
 }  // namespace
 
+// Actual GCC Thumb switch encodings, including the PC+4 value at an ADD pc
+// whose address is 2 mod 4. Cases remain labels in their dispatcher host.
+static bool thumb_switch(bool halfword, bool literal, bool manual,
+                         unsigned fault = 0, bool bhi = false) {
+    std::vector<std::uint8_t> rom(0x400, 0);
+    put16(rom, 0, 0x2803);      // cmp r0,#3
+    put16(rom, 2, 0xD21D);     // bcs default at +0x40
+    if (bhi) {
+        put16(rom, 0, 0x2802); // cmp r0,#2 (inclusive bound)
+        put16(rom, 2, 0xD81D); // bhi default
+    }
+    put16(rom, 4, halfword ? 0x0041 : 0x46C0); // lsls r1,r0,#1 / nop
+    put16(rom, 6, literal ? 0x4B16 : 0xA316);  // table at +0x60
+    put16(rom, 8, 0x46C0);     // nop (ADD pc is 2 mod 4)
+    put16(rom, 10, halfword ? 0x5A5B : 0x5C1B); // ldrh r3,[r3,r1] / ldrb
+    put16(rom, 12, fault == 2 ? 0x009B : 0x005B); // lsl #2 / #1
+    put16(rom, 14, fault == 3 ? 0x469F : 0x449F); // mov / add pc,r3
+    if (literal) put32(rom, 0x60, kBase + 0x80);
+    const unsigned table = literal ? 0x80 : 0x60;
+    // Values exceed 255 in the halfword variant, proving full-width loads.
+    const unsigned first = halfword ? 0x220 : 0xA0;
+    for (unsigned i = 0; i < 3; ++i) {
+        const unsigned target = first + 4 * i;
+        const unsigned value = (target - 18) / 2;
+        if (halfword) put16(rom, table + 2 * i, value);
+        else rom[table + i] = static_cast<std::uint8_t>(value);
+        put16(rom, target, 0x2201 + i);  // movs r2,#case
+        put16(rom, target + 2, 0x4770);  // bx lr
+    }
+    put16(rom, 0x40, 0x4770);
+    if (fault == 1 || manual) put16(rom, 2, 0x46C0); // no guard
+    if (fault == 4) { // invalid target in the table: reject atomically
+        if (halfword) put16(rom, table, 0xFFFF);
+        else rom[table] = static_cast<std::uint8_t>((table - 18) / 2);
+    }
+    if (fault == 5) put16(rom, 0, 0x2903); // guard compares wrong index
+    if (fault == 6) put16(rom, 8, halfword ? 0x2100 : 0x2000); // clobber index
+    if (fault == 7) { // a call between guard and table base invalidates the bound
+        put16(rom, 4, 0xF000); // bl default
+        put16(rom, 6, 0xF81C);
+        put16(rom, 8, literal ? 0x4B15 : 0xA315); // reload table base after call
+    }
+    gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
+    finder.set_speculative_literal_harvest(false);
+    finder.set_static_resume_all(true);
+    if (manual) finder.add_thumb_relative_table(kBase + table,
+        halfword ? 2 : 1, 3, kBase + 18);
+    finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "switch_host"});
+    finder.run(64);
+    const auto* host = find_function(finder, kBase, gbarecomp::CpuMode::Thumb);
+    if (!host || !finder.collisions().empty()) return false;
+    if (fault) return host->switch_blocks.empty() && finder.auto_jump_tables().empty();
+    if (finder.auto_jump_tables().size() != (manual ? 0u : 1u) ||
+        host->switch_blocks.size() != 3) return false;
+    for (unsigned i = 0; i < 3; ++i) {
+        const auto target = kBase + first + 4 * i;
+        if (has_function(finder, target, gbarecomp::CpuMode::Thumb) ||
+            std::find(host->alias_entries.begin(), host->alias_entries.end(), target) ==
+                host->alias_entries.end()) return false;
+    }
+    const auto body = gbarecomp::emit_function_body_str(
+        *host, rom.data(), rom.size(), kBase, {});
+    if (body.find("/* 08000060 ") != std::string::npos ||
+        body.find("/* 08000080 ") != std::string::npos) return false;
+    return true;
+}
+
 int main() {
+    for (bool halfword : {false, true}) {
+        for (bool literal : {false, true}) {
+            for (unsigned fault = 0; fault <= 7; ++fault) {
+                if (!thumb_switch(halfword, literal, false, fault)) {
+                    std::fprintf(stderr, "Thumb switch failed: half=%d literal=%d fault=%u\n",
+                                 halfword, literal, fault);
+                    return 1;
+                }
+            }
+            if (!thumb_switch(halfword, literal, true)) return 1;
+            if (!thumb_switch(halfword, literal, false, 0, true)) return 1;
+        }
+    }
     std::vector<std::uint8_t> rom(0x80, 0);
 
     // ldr r1,[pc,#8]  -> tracker sees the even ROM data pointer below
