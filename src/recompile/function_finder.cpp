@@ -258,8 +258,25 @@ bool FunctionFinder::is_thumb_func_prologue(uint32_t addr) const {
     return (read_u16(addr) & 0xFF00u) == 0xB500u;
 }
 
-void FunctionFinder::harvest_aot_pointer_table(uint32_t table_base) {
-    if (aot_scan_start_ >= aot_scan_end_ || (table_base & 3u) != 0u ||
+void FunctionFinder::harvest_aot_reference(uint32_t raw) {
+    if (aot_scan_start_ >= aot_scan_end_) return;
+    // A reachable PC-relative load may pass a callback directly to a helper,
+    // rather than consuming it with BX in this function. The Thumb tag and
+    // PUSH-LR prologue constrain this case even with speculative literals off.
+    if (raw & 1u) {
+        const uint32_t target = raw & ~1u;
+        if (target >= aot_scan_start_ &&
+            static_cast<uint64_t>(target) + 12u <= aot_scan_end_ &&
+            is_thumb_func_prologue(target) &&
+            looks_like_code(target, CpuMode::Thumb, true) &&
+            aot_seen_seed_keys_.insert(visit_key(target, CpuMode::Thumb)).second) {
+            aot_pointer_seeds_.push_back({target, CpuMode::Thumb, "", 0, true});
+            ++stats_.aot_callback_seeds;
+        }
+        return;
+    }
+    const uint32_t table_base = raw;
+    if ((table_base & 3u) != 0u ||
         !addr_in_rom(table_base) ||
         !aot_seen_pointer_tables_.insert(table_base).second) {
         return;
@@ -351,6 +368,132 @@ void FunctionFinder::harvest_aot_pointer_table(uint32_t table_base) {
         ++emitted;
     }
     if (emitted != 0) ++stats_.aot_pointer_tables;
+}
+
+bool FunctionFinder::is_thumb_ram_leaf(uint32_t addr, uint32_t* ram_global) const {
+    if (!looks_like_code(addr, CpuMode::Thumb, false)) return false;
+    const auto first = armv4t::ThumbDecoder::decode(read_u16(addr), addr);
+    if (first.op != armv4t::IrOp::LDR || first.rd >= 4 ||
+        first.mem.rn != 15 || first.mem.by_register || first.mem.writeback)
+        return false;
+    const uint32_t literal = ((addr + 4u) & ~3u) + first.mem.imm_offset;
+    if (!can_read_at(literal, 4)) return false;
+    const uint32_t ram = read_u32(literal);
+    if (ram < 0x02000000u || ram >= 0x04000000u) return false;
+
+    // A small, stackless leaf anchored by a RAM-global literal is a stronger
+    // entry shape than merely decoding arbitrary Thumb bytes. Require a store
+    // and BX LR, with no calls, other branches, SP, or callee-saved registers.
+    bool stored = false;
+    for (uint32_t pc = addr + 2u; pc < addr + 32u; pc += 2u) {
+        if (pc >= aot_scan_end_ || !can_read_at(pc, 2) || addr_in_data_range(pc))
+            return false;
+        const auto ins = armv4t::ThumbDecoder::decode(read_u16(pc), pc);
+        if (ins.is_undefined) return false;
+        if (ins.op == armv4t::IrOp::BX && ins.rm == 14) {
+            if (stored && ram_global) *ram_global = ram;
+            return stored;
+        }
+        if (ins.is_branch || ins.is_call || ins.rd >= 4) return false;
+        switch (ins.op) {
+            case armv4t::IrOp::LDR: case armv4t::IrOp::LDRB:
+            case armv4t::IrOp::LDRH: case armv4t::IrOp::LDRSB:
+            case armv4t::IrOp::LDRSH:
+            case armv4t::IrOp::STR: case armv4t::IrOp::STRB:
+            case armv4t::IrOp::STRH:
+                if ((ins.mem.rn >= 4 && ins.mem.rn != 15) ||
+                    (ins.mem.by_register && ins.mem.reg_offset.rm >= 4) ||
+                    ins.mem.writeback) return false;
+                if (ins.op == armv4t::IrOp::STR ||
+                    ins.op == armv4t::IrOp::STRB || ins.op == armv4t::IrOp::STRH)
+                    stored = true;
+                break;
+            case armv4t::IrOp::ADD: case armv4t::IrOp::SUB:
+            case armv4t::IrOp::RSB: case armv4t::IrOp::ADC:
+            case armv4t::IrOp::SBC: case armv4t::IrOp::AND:
+            case armv4t::IrOp::EOR: case armv4t::IrOp::ORR:
+            case armv4t::IrOp::BIC: case armv4t::IrOp::MOV:
+            case armv4t::IrOp::MVN:
+                if (ins.rn >= 4 ||
+                    (ins.op2.kind == armv4t::Op2::Kind::Shifted &&
+                     (ins.op2.shifted.rm >= 4 ||
+                      (ins.op2.shifted.by_register && ins.op2.shifted.imm_or_rs >= 4))))
+                    return false;
+                break;
+            default:
+                return false;
+        }
+    }
+    return false;
+}
+
+std::vector<FunctionSeed> FunctionFinder::collect_referenced_callback_seeds() {
+    std::vector<FunctionSeed> out;
+    if (aot_scan_start_ >= aot_scan_end_) return out;
+    std::unordered_set<uint32_t> objects;
+    std::unordered_set<uint32_t> referenced_code;
+    std::unordered_set<uint32_t> callback_globals;
+    std::unordered_set<uint64_t> emitted;
+    for (const auto& seed : seeds_) emitted.insert(visit_key(seed.addr, seed.mode));
+
+    // Inspect only the first two words of an explicitly referenced ROM object
+    // outside the reviewed executable span. Both words must be odd Thumb code
+    // pointers: at least one PUSH-LR entry corroborates its neighbor, which
+    // must be another PUSH-LR entry or a RAM-global leaf.
+    // No table-end guess or unrestricted harvesting of pointer-shaped words.
+    for (std::size_t off = 0; off + 4 <= rom_size_; off += 4) {
+        const uint32_t object = read_u32(rom_base_ + static_cast<uint32_t>(off));
+        const uint32_t code = object & ~1u;
+        if ((object & 1u) && code >= aot_scan_start_ && code < aot_scan_end_)
+            referenced_code.insert(code);
+        if ((object & 3u) || !addr_in_rom(object) ||
+            (object >= aot_scan_start_ && object < aot_scan_end_) ||
+            !can_read_at(object, 8) || !objects.insert(object).second) continue;
+        const uint32_t raw[2] = {read_u32(object), read_u32(object + 4u)};
+        uint32_t target[2] = {};
+        uint32_t ram_global[2] = {};
+        bool push[2] = {}, leaf[2] = {};
+        bool valid = true;
+        for (unsigned i = 0; i < 2; ++i) {
+            target[i] = raw[i] & ~1u;
+            if (!(raw[i] & 1u) || target[i] < aot_scan_start_ ||
+                target[i] >= aot_scan_end_ ||
+                static_cast<uint64_t>(target[i]) + 12u > aot_scan_end_ ||
+                !looks_like_code(target[i], CpuMode::Thumb, true)) {
+                valid = false;
+                break;
+            }
+            push[i] = is_thumb_func_prologue(target[i]);
+            leaf[i] = !push[i] && is_thumb_ram_leaf(target[i], &ram_global[i]);
+        }
+        if (!valid || target[0] == target[1] || !(push[0] || push[1]) ||
+            !(push[0] || leaf[0]) || !(push[1] || leaf[1])) continue;
+        ++stats_.aot_callback_objects;
+        for (uint32_t ram : ram_global) {
+            if (ram != 0) callback_globals.insert(ram);
+        }
+        for (uint32_t pc : target) {
+            if (!emitted.insert(visit_key(pc, CpuMode::Thumb)).second) continue;
+            out.push_back({pc, CpuMode::Thumb, "", 0, /*speculative=*/true});
+            aot_seen_seed_keys_.insert(visit_key(pc, CpuMode::Thumb));
+            ++stats_.aot_callback_seeds;
+        }
+    }
+    // A script may also take setters individually rather than through the
+    // descriptor. Require the same bounded leaf shape and the exact RAM-global
+    // literal already corroborated by a descriptor, plus an odd ROM reference.
+    std::vector<uint32_t> ordered_code(referenced_code.begin(), referenced_code.end());
+    std::sort(ordered_code.begin(), ordered_code.end());
+    for (uint32_t pc : ordered_code) {
+        if (emitted.count(visit_key(pc, CpuMode::Thumb)) != 0) continue;
+        uint32_t ram = 0;
+        if (!is_thumb_ram_leaf(pc, &ram) || callback_globals.count(ram) == 0) continue;
+        emitted.insert(visit_key(pc, CpuMode::Thumb));
+        out.push_back({pc, CpuMode::Thumb, "", 0, /*speculative=*/true});
+        aot_seen_seed_keys_.insert(visit_key(pc, CpuMode::Thumb));
+        ++stats_.aot_callback_seeds;
+    }
+    return out;
 }
 
 std::vector<FunctionSeed> FunctionFinder::collect_code_copy_seeds() const {
@@ -1853,7 +1996,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                         // table. This reachability evidence avoids the
                         // catastrophic false-positive rate of sweeping every
                         // pointer-shaped word in asset/compressed-data space.
-                        harvest_aot_pointer_table(raw);
+                        harvest_aot_reference(raw);
                     }
                 } else {
                     reg_const[ins.rd].known = false;
@@ -2092,6 +2235,8 @@ void FunctionFinder::run(std::size_t max_functions) {
     stats_.aot_code_copy_seeds = code_copy_seeds.size();
     seeds_.insert(seeds_.end(),
                   code_copy_seeds.begin(), code_copy_seeds.end());
+    auto callback_seeds = collect_referenced_callback_seeds();
+    seeds_.insert(seeds_.end(), callback_seeds.begin(), callback_seeds.end());
 
     // Validate seeds against data_ranges before any walking. A seed
     // landing inside a data_range is a collision (the TOML author

@@ -1391,6 +1391,8 @@ int main(int argc, char** argv) {
                     stats.aot_pointer_seeds,
                     stats.aot_pointer_tables,
                     stats.aot_code_copy_seeds);
+        std::printf("  aot_callbacks:         %zu seeds; %zu referenced descriptors\n",
+                    stats.aot_callback_seeds, stats.aot_callback_objects);
         std::printf("  data_ranges_honored:   %zu\n",
                     cfg.data_ranges.size() + cfg.jump_tables.size());
         std::printf("  code_copies:           %zu\n",
