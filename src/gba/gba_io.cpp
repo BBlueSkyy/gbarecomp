@@ -228,6 +228,21 @@ uint32_t GbaIo::dma_transfer_cost(uint32_t src, uint32_t dst, bool transfer_32,
     return read + write + 2u;
 }
 
+// A DMA3 aimed at the EEPROM window is one serial request, so its unit count
+// is the request length in bits: the game's own requests identify the part
+// (see GbaSave::eeprom_observe_request_length).
+static void observe_eeprom_request(armv4t::Bus* bus, int channel, uint32_t dad,
+                                   uint32_t units) {
+    if (channel != 3 || (dad >> 24) != 0x0Du) return;
+    auto* gba = dynamic_cast<GbaBus*>(bus);
+    if (!gba || !gba->save().eeprom_observe_request_length(units)) return;
+    std::fprintf(stderr,
+                 "[gbarecomp:save] EEPROM part taken from the game's requests: "
+                 "%s (%u-bit request, %zu bytes)\n",
+                 gba->save().eeprom_size() == 512u ? "4 Kbit" : "64 Kbit",
+                 units, gba->save().eeprom_size());
+}
+
 // Run a DMA channel in immediate mode.
 //
 // GBATEK § "GBA DMA Transfers":
@@ -286,6 +301,7 @@ void GbaIo::run_immediate_dma(int channel) {
 
     ++dma_runs_[channel];
     dma_words_[channel] += word_count;
+    observe_eeprom_request(bus_, channel, dad, word_count);
 
     // Always-on DMA-write watchpoint (MC-HP-002). DMA writes go straight through
     // bus_->write*, bypassing the recompiled-code runtime_trace path, so the CPU
@@ -371,6 +387,7 @@ void GbaIo::run_timed_dma(int start_mode) {
         const uint32_t align_mask = transfer_32 ? ~3u : ~1u;
         uint32_t s = dma_next_source_[channel] & align_mask;
         uint32_t d = dma_next_dest_[channel] & align_mask;
+        observe_eeprom_request(bus_, channel, d, word_count);
         dma_steal_cycles_ += dma_transfer_cost(s, d, transfer_32, word_count);
 #if defined(GBARECOMP_DMA_RAM_HLE)
         const bool copied = dma_watch < 0 && src_ctrl == 0 &&

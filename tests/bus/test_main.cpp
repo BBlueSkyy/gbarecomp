@@ -562,6 +562,64 @@ void test_eeprom_8k_read_write() {
     }
 }
 
+uint8_t eeprom_read_block_byte(gba::GbaSave& save, uint32_t block, int addr_bits,
+                               int byte_index) {
+    eeprom_send_bits(save, 0b11, 2);
+    eeprom_send_bits(save, block, addr_bits);
+    eeprom_send_bits(save, 0, 1);
+    for (int i = 0; i < 4; ++i) (void)save.eeprom_read_bit();
+    uint8_t want = 0;
+    for (int i = 0; i < 8; ++i) {
+        uint8_t got = 0;
+        for (int bit = 0; bit < 8; ++bit) {
+            got = static_cast<uint8_t>((got << 1) | save.eeprom_read_bit());
+        }
+        if (i == byte_index) want = got;
+    }
+    return want;
+}
+
+// A title configured as 64 Kbit whose game drives a 4 Kbit part: the game's
+// request lengths (9 / 73 bits) settle the part, the bytes a 4 Kbit part
+// decodes survive, and a later 17 / 81-bit request widens it again.
+void test_eeprom_part_from_request_lengths() {
+    gba::GbaSave save;
+    save.configure_eeprom(8 * 1024);
+    std::array<uint8_t, 8 * 1024> image{};
+    image.fill(0xFF);
+    image[2 * 8 + 3] = 0x5A;   // 4 Kbit block 2, byte 3
+    image[600] = 0x77;         // past the 4 Kbit part
+    check_bool("eeprom_part", "load_8k",
+               save.load_eeprom_bytes(image.data(), image.size()), true);
+
+    check_bool("eeprom_part", "ignores_other_lengths",
+               save.eeprom_observe_request_length(68), false);
+    check_bool("eeprom_part", "read_request_4k",
+               save.eeprom_observe_request_length(9), true);
+    check_eq("eeprom_part", "size_4k", save.eeprom_size(), 512u);
+    check_eq("eeprom_part", "bytes_4k", save.eeprom_bytes().size(), 512u);
+    check_eq("eeprom_part", "kept_low_byte",
+             eeprom_read_block_byte(save, 2, 6, 3), 0x5Au);
+
+    check_bool("eeprom_part", "write_request_4k_no_change",
+               save.eeprom_observe_request_length(73), false);
+    const uint8_t pattern[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    eeprom_send_bits(save, 0b10, 2);
+    eeprom_send_bits(save, 63, 6);
+    for (uint8_t b : pattern) eeprom_send_bits(save, b, 8);
+    eeprom_send_bits(save, 0, 1);
+    check_eq("eeprom_part", "write_4k_last_block",
+             eeprom_read_block_byte(save, 63, 6, 7), 8u);
+
+    check_bool("eeprom_part", "write_request_64k",
+               save.eeprom_observe_request_length(81), true);
+    check_eq("eeprom_part", "size_64k", save.eeprom_size(), 8u * 1024u);
+    check_eq("eeprom_part", "kept_after_widen",
+             eeprom_read_block_byte(save, 63, 14, 7), 8u);
+    check_eq("eeprom_part", "dropped_past_4k_reads_erased",
+             save.eeprom_bytes()[600], 0xFFu);
+}
+
 void test_eeprom_persistence_bytes_and_dirty() {
     gba::GbaSave save;
     std::array<uint8_t, 16> persisted{};
@@ -697,6 +755,7 @@ int main() {
     test_flash_chip(0x10000, 0x1C);
     test_flash_chip(0x20000, 0x09);
     test_eeprom_8k_read_write();
+    test_eeprom_part_from_request_lengths();
     test_eeprom_persistence_bytes_and_dirty();
     test_waitstates();
     if (failures) {
