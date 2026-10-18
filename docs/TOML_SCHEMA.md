@@ -287,8 +287,8 @@ fall-through continuations. These fragments support helpers copied onto a
 moving EWRAM or IWRAM stack without a fixed `runtime_start` hint. They use the
 live RAM PC for operands, literal alignment, links, branches, IRQ resumes and
 fetch timing. The runtime compares the complete fragment against raw RAM before
-entry and checks each instruction again before execution. Changed or unknown
-bytes return to normal dispatch and remain a loud strict-static miss unless
+entry and checks each instruction again before execution. Unsupported changes
+return to normal dispatch and remain a loud strict-static miss unless
 another AOT fragment matches. Matching has no bus-read or timing side effects;
 it never decodes or compiles code at runtime. No additional configuration is
 required. On Matrix cartridges, the active banked aperture uses the same byte
@@ -299,6 +299,29 @@ these additional bodies enter the guarded catalog. Unknown bytes cannot fall
 back to a stale fixed-address native
 entry. Reviewed mod hooks and immediate overrides still require their exact
 live guest PC. BIOS compilation remains separate.
+
+Copied ARM code can initialize immediate operands in place. For unconditional
+`MOV` and `ADD` without flag updates or PC operands/destinations, the native
+body can read the immediate field as live data. The opcode, condition,
+registers, and flag behavior remain fixed and guarded, including on cached
+entries and instruction resumes. Other fields and instruction forms still
+require an exact match. This is a fixed native operation with a data parameter;
+the runtime does not decode an instruction or choose an operation.
+
+The finder also recognizes an exact `LDR word; CMP word,constant; STREQ`
+compare-and-replace initializer rooted in ROM-backed RAM. A same-address store
+of a known ARM `STR` opcode can produce a second, exact initialized native
+variant. Its span follows the copied routine's non-call control flow through
+split loop/resume labels. Conditional stores with another predicate, changed
+addresses, unknown replacement words, and control-flow replacements do not
+qualify. Matrix module section descriptors additionally map initialized RAM
+sections with checked source, destination, and size bounds.
+
+ARM indexed word tables support backward PC-relative address formation and
+ROM-backed RAM. A sparse table immediately before a known PUSH-LR dispatcher
+can include null slots only after its entire span is checked as null or valid
+code pointers. The dispatcher entry supplies the end of that span. Thumb byte
+and halfword relative tables continue to require a dominating CMP range bound.
 
 `GBARECOMP_STRICT_STATIC=1` rejects explicit interpreter bridges and forced
 interpreter hooks as well as dispatch misses. Coverage counts forced and direct

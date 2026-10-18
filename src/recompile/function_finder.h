@@ -184,6 +184,10 @@ struct DataRangeCollision {
     std::string range_note;
 };
 
+struct ConstantCodePatch {
+    uint32_t runtime_base, marker, replacement;
+};
+
 class FunctionFinder {
 public:
     // ROM bytes; expected to be the cartridge image as loaded into
@@ -247,6 +251,9 @@ public:
     const FinderStats& stats() const { return stats_; }
     const std::vector<DataRange>& data_ranges() const { return data_ranges_; }
     const std::vector<CodeCopyRange>& code_copies() const { return code_copies_; }
+    const std::vector<ConstantCodePatch>& constant_code_patches() const {
+        return constant_code_patches_;
+    }
 
     // Jump tables recognized automatically during discovery.
     const std::vector<AutoJumpTable>& auto_jump_tables() const {
@@ -298,6 +305,7 @@ private:
 
     std::vector<DataRange>           data_ranges_;
     std::vector<CodeCopyRange>       code_copies_;
+    std::vector<ConstantCodePatch>   constant_code_patches_;
     std::vector<DataRangeCollision>  collisions_;
     std::unordered_set<uint32_t>     excluded_;
     std::unordered_map<uint32_t, std::string> exclude_reasons_;

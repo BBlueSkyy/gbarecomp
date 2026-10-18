@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -192,6 +193,33 @@ int emit(FILE* f, const char* out_path) {
             fn.source_addr, empty, nullptr, &reviewed, true);
         std::fprintf(f, "extern \"C\" void ram_mutation_fixture_%u(void) {\n%s}\n",
                      variant, body.c_str());
+    }
+    for (unsigned region : {3u,8u}) for (unsigned op=0;op<2;++op) {
+        const uint32_t pc=region<<24;
+        const auto ins=armv4t::ArmDecoder::decode(op ? 0xE2800000u : 0xE3A0A000u,pc);
+        armv4t::CodegenCtx ctx{};
+        ctx.current_function_addr=pc; ctx.current_function_end_addr=pc+4u;
+        ctx.runtime_pc_base="_runtime_base"; ctx.runtime_arm_immediate=true;
+        bool unimplemented=false;
+        const auto body=armv4t::ArmCodegen::emit_instr(ins,ctx,&unimplemented);
+        if (unimplemented) return 1;
+        std::fprintf(f,"extern \"C\" void native_param_%u_%u(void) {\n"
+            "const uint32_t _runtime_base=g_cpu.R[15];\n%s"
+            "codegen_test_fellthrough();\n}\n",region,op,body.c_str());
+    }
+    std::fprintf(f,"extern \"C\" const TestFn kNativeParamFns[2][2] = {"
+        "{native_param_3_0,native_param_3_1},{native_param_8_0,native_param_8_1}};\n");
+    // Fixed control/flag fields are never eligible for parameter matching.
+    for (uint32_t raw : {0xE3B0A000u,0x13A0A000u,0xE28F0000u,0xE3A0F000u,0xE3E0A000u}) {
+        const auto ins=armv4t::ArmDecoder::decode(raw,0x03000000u);
+        if (armv4t::ArmCodegen::supports_runtime_arm_immediate(ins)) return 1;
+        armv4t::CodegenCtx ctx{};
+        ctx.current_function_addr=0x03000000u; ctx.runtime_pc_base="base";
+        ctx.runtime_arm_immediate=true;
+        bool rejected=false,unused=false;
+        try { armv4t::ArmCodegen::emit_instr(ins,ctx,&unused); }
+        catch (const std::invalid_argument&) { rejected=true; }
+        if (!rejected) return 1;
     }
     std::fprintf(f, "extern \"C\" const TestFn kRomTestFns[] = {\n");
     for (std::size_t i = 0; i < kTestCasesCount; ++i) {

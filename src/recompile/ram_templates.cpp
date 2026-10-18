@@ -5,6 +5,7 @@
 #include <set>
 #include <unordered_set>
 #include "arm_decode.h"
+#include "arm_codegen.h"
 #include "thumb_decode.h"
 
 namespace gbarecomp {
@@ -13,7 +14,8 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
     const std::vector<Function>& original_functions, const uint8_t* image,
     std::size_t image_size, uint32_t image_base, const std::string& prefix,
     const std::vector<DataRange>* data_ranges,
-    const std::vector<CodeCopyRange>* code_copies) {
+    const std::vector<CodeCopyRange>* code_copies,
+    const std::vector<ConstantCodePatch>* code_patches) {
     std::vector<Function> functions=original_functions;
     const bool matrix_cart=image_size>0x02000000u && image[0xAC]=='M';
     std::vector<RamCodeTemplate> result;
@@ -21,6 +23,8 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
     std::set<uint32_t> references;
     std::set<uint32_t> thumb_sources;
     auto source_of=[](const Function& fn) { return fn.source_addr ? fn.source_addr : fn.addr; };
+    struct PatchSpan { uint32_t begin,end,marker,replacement; };
+    std::vector<PatchSpan> patches;
     auto spans_of=[](const Function& fn) {
         auto spans=fn.switch_blocks;
         spans.push_back({fn.addr,fn.end_addr});
@@ -43,6 +47,46 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
             : armv4t::ArmDecoder::decode(raw,pc);
         return true;
     };
+    auto append_patches=[&](const std::vector<Function>& bodies,
+                           const std::vector<ConstantCodePatch>& updates) {
+        for (const auto& update : updates) for (const auto& root : bodies) {
+            if (root.mode!=CpuMode::Arm || root.addr!=update.runtime_base ||
+                source_of(root)==root.addr || root.end_addr<=root.addr) continue;
+            const int64_t bias=int64_t(source_of(root))-root.addr;
+            std::vector<uint32_t> pending={source_of(root)};
+            std::unordered_set<uint32_t> visited;
+            for (std::size_t i=0;i<pending.size();++i) {
+                if (!visited.insert(pending[i]).second) continue;
+                for (const auto& body : bodies) {
+                    if (body.mode!=CpuMode::Arm || source_of(body)!=pending[i] ||
+                        int64_t(source_of(body))-body.addr!=bias) continue;
+                    // Discovery may split the converter at loop/resume labels.
+                    // Follow its non-call CFG, rather than clipping a proven
+                    // initializer to the first such label or guessing an end.
+                    for (const auto& span : spans_of(body)) {
+                        patches.push_back({source_of(body)+(span.start-body.addr),
+                            source_of(body)+(span.end-body.addr),update.marker,update.replacement});
+                        armv4t::Instr last{};
+                        bool have_last=false;
+                        for (uint32_t pc=span.start;pc<span.end;pc+=4u) {
+                            armv4t::Instr ins{};
+                            if (!decode(body,pc,&ins)) break;
+                            if (ins.op==armv4t::IrOp::B) {
+                                const int64_t target=bias+ins.branch_target;
+                                if (target>=image_base && uint64_t(target-image_base)<image_size)
+                                    pending.push_back(uint32_t(target));
+                            }
+                            last=ins; have_last=true;
+                        }
+                        if (have_last && !last.is_return && !last.is_indirect &&
+                            !(last.op==armv4t::IrOp::B && last.cond==armv4t::Cond::AL))
+                            pending.push_back(source_of(body)+(span.end-body.addr));
+                    }
+                }
+            }
+        }
+    };
+    if (code_patches) append_patches(original_functions,*code_patches);
     auto add_reference=[&](uint32_t value) {
         const uint32_t address=value & ~1u;
         if (address >= image_base && uint64_t(address-image_base)<image_size) {
@@ -146,21 +190,46 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
                     if ((source & 3u) || source<entry_offset) continue;
                     const uint64_t module=source-entry_offset;
                     if (module<image_base || module-image_base+copy.size>image_size ||
-                        module==copy.source_start ||
                         !modules.emplace(copy.runtime_start,uint32_t(module)).second) continue;
                     FunctionFinder variant(image,image_size,image_base);
                     variant.set_speculative_literal_harvest(false);
-                    variant.add_code_copy(copy.runtime_start,uint32_t(module),copy.size,
+                    uint32_t code_size=copy.size;
+                    uint32_t header_base=0,header_end=0,header_entry=0;
+                    const bool load_header=read_word(module+0x38u,4,&header_base) &&
+                        read_word(module+0x3Cu,4,&header_end) &&
+                        read_word(module+0x40u,4,&header_entry) &&
+                        header_base==copy.runtime_start && header_entry==fn.addr &&
+                        header_end>fn.addr && header_end-header_base<=copy.size;
+                    if (load_header) code_size=header_end-header_base;
+                    variant.add_code_copy(copy.runtime_start,uint32_t(module),code_size,
                                           "guarded module sibling");
+                    if (load_header) for (uint32_t record=8u;record<0x38u;record+=12u) {
+                        uint32_t destination=0,begin=0,end=0;
+                        if (!read_word(module+record,4,&destination) ||
+                            !read_word(module+record+4u,4,&begin) ||
+                            !read_word(module+record+8u,4,&end)) continue;
+                        const uint32_t region=destination>>24;
+                        if ((region!=2u && region!=3u) || begin<header_end || end<=begin ||
+                            end-begin>(region==2u ? 0x40000u : 0x8000u) ||
+                            uint64_t(destination)+(end-begin)>(uint64_t(region+1u)<<24)) continue;
+                        const uint64_t backing=module+uint64_t(begin-header_base);
+                        if (backing<image_base || backing-image_base+(end-begin)>image_size)
+                            continue;
+                        variant.add_code_copy(destination,uint32_t(backing),end-begin,
+                                              "module initialized RAM section");
+                    }
                     if (data_ranges) for (const auto& range : *data_ranges) {
                         // Runtime annotations describe the original linked
                         // layout. A sibling can place its tables elsewhere.
-                        if (range.end<=copy.runtime_start ||
-                            uint64_t(range.start)>=uint64_t(copy.runtime_start)+copy.size)
-                            variant.add_data_range(range.start,range.end,range.note);
+                        bool relocated=false;
+                        for (const auto& section : variant.code_copies())
+                            relocated |= range.end>section.runtime_start &&
+                                uint64_t(range.start)<uint64_t(section.runtime_start)+section.size;
+                        if (!relocated) variant.add_data_range(range.start,range.end,range.note);
                     }
                     variant.add_seed({fn.addr,CpuMode::Arm,"",uint32_t(source),true});
                     variant.run(4096);
+                    append_patches(variant.functions(),variant.constant_code_patches());
                     for (const auto& body : variant.functions())
                         if (body.source_addr && body.source_addr!=body.addr)
                             functions.push_back(body);
@@ -226,7 +295,23 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
                 if (length % step != 0 || source_pc < image_base ||
                     uint64_t(source_pc - image_base) + length > image_size) break;
                 const auto offset = std::size_t(source_pc - image_base);
+                for (unsigned initialized=0;initialized<2;++initialized) {
                 std::vector<uint8_t> bytes(image + offset, image + offset + length);
+                bool patched=false;
+                if (initialized && original.mode==CpuMode::Arm) {
+                    for (const auto& patch : patches) {
+                        for (uint32_t n=0;n+4u<=length;n+=4u) {
+                            const uint64_t at=uint64_t(source_pc)+n;
+                            if (at<patch.begin || at+4u>patch.end) continue;
+                            uint32_t raw=0;
+                            for (uint32_t b=0;b<4u;++b) raw |= uint32_t(bytes[n+b])<<(8u*b);
+                            if (raw!=patch.marker) continue;
+                            for (uint32_t b=0;b<4u;++b) bytes[n+b]=uint8_t(patch.replacement>>(8u*b));
+                            patched=true;
+                        }
+                    }
+                }
+                if (initialized && !patched) continue;
                 if (seen.emplace(original.mode, bytes).second) {
                     Function fn{};
                     fn.addr = kCanonicalBase;
@@ -239,7 +324,20 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
                     fn.name = name;
                     for (uint32_t n = step; n < length; n += step)
                         fn.alias_entries.push_back(fn.addr + n);
-                    RamCodeTemplate t{std::move(fn),std::move(bytes),{}};
+                    RamCodeTemplate t{std::move(fn),std::move(bytes),{}, {}};
+                    if (original.mode==CpuMode::Arm) {
+                        std::vector<uint8_t> masks(length,0xFFu);
+                        bool parameters=false;
+                        for (uint32_t n=0;n+4u<=length;n+=4u) {
+                            uint32_t raw=0;
+                            for (uint32_t b=0;b<4u;++b) raw |= uint32_t(t.bytes[n+b])<<(8u*b);
+                            const auto ins=armv4t::ArmDecoder::decode(raw,t.function.addr+n);
+                            if (armv4t::ArmCodegen::supports_runtime_arm_immediate(ins)) {
+                                masks[n]=0; masks[n+1u]=0xF0u; parameters=true;
+                            }
+                        }
+                        if (parameters) t.masks=std::move(masks);
+                    }
                     if (matrix_cart) {
                         t.cart_function=t.function;
                         t.cart_function.addr=0x08000000u;
@@ -250,6 +348,7 @@ std::vector<RamCodeTemplate> collect_ram_code_templates(
                             alias=t.cart_function.addr+(alias-t.function.addr);
                     }
                     result.push_back(std::move(t));
+                }
                 }
                 pc += length;
             }

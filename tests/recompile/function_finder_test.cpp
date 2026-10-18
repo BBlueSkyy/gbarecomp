@@ -189,6 +189,58 @@ static bool byte_record_callbacks(unsigned fault) {
         !has_function(finder,kBase+0x280,gbarecomp::CpuMode::Thumb);
 }
 
+static bool arm_backward_adr_table(bool copied,unsigned fault) {
+    constexpr uint32_t ram=0x03000000u;
+    const uint32_t live=copied ? ram : kBase;
+    std::vector<uint8_t> image(0x200,0);
+    put32(image,0x100,fault==1 ? 0xE2407088u : fault==4 ? 0x124F7088u : 0xE24F7088u);
+    put32(image,0x104,fault==2 ? 0xE7976186u : 0xE7976106u);
+    put32(image,0x108,fault==3 ? 0xE12FFF15u : 0xE12FFF16u);
+    for (unsigned n=0;n<3;++n) {
+        const auto offset=0x20u+n*0x20u;
+        put32(image,0x80+n*4,live+offset);
+        put32(image,offset,0xE3A00001u+n);
+        put32(image,offset+4,0xE12FFF1Eu);
+    }
+    gbarecomp::FunctionFinder finder(image.data(),image.size(),kBase);
+    finder.set_speculative_literal_harvest(false);
+    if (copied) finder.add_code_copy(ram,kBase,uint32_t(image.size()),"ARM dispatcher and table");
+    finder.add_seed({live+0x100,gbarecomp::CpuMode::Arm,"dispatcher"});
+    finder.run(32);
+    for (unsigned n=0;n<3;++n)
+        if (has_function(finder,live+0x20u+n*0x20u,gbarecomp::CpuMode::Arm)!=(fault==0))
+            return false;
+    return finder.stats().auto_jump_tables==(fault==0 ? 1u : 0u);
+}
+
+static bool arm_sparse_preceding_table(bool copied,unsigned fault) {
+    const uint32_t live=copied ? 0x03000000u : kBase;
+    std::vector<uint8_t> image(0x200,0);
+    put32(image,0x100,fault==1 ? 0xE1A00000u : 0xE92D4000u); // PUSH LR / NOP
+    put32(image,0x104,0xE24F702Cu); // ADR r7,table at +E0
+    put32(image,0x108,0xE7976106u); // LDR r6,[r7,r6,LSL#2]
+    put32(image,0x10C,0xE12FFF16u); // BX r6
+    for (unsigned n=0;n<3;++n) {
+        const auto offset=0x20u+n*0x20u;
+        put32(image,0xE0u+(n==2 ? 3u : n)*4u,live+offset);
+        put32(image,offset,0xE3A00001u+n); put32(image,offset+4u,0xE12FFF1Eu);
+    }
+    if (fault==2) put32(image,0xFC,0x04000000u); // no complete pointer/null array
+    if (fault==3) put32(image,0xFC,live+0x62u); // misaligned ARM target
+    gbarecomp::FunctionFinder finder(image.data(),image.size(),kBase);
+    finder.set_speculative_literal_harvest(false);
+    if (copied) finder.add_code_copy(live,kBase,uint32_t(image.size()),"sparse ARM table");
+    finder.add_seed({live+0x100,gbarecomp::CpuMode::Arm,"dispatcher"});
+    finder.run(32);
+    if (!has_function(finder,live+0x20,gbarecomp::CpuMode::Arm) ||
+        !has_function(finder,live+0x40,gbarecomp::CpuMode::Arm) ||
+        has_function(finder,live+0x60,gbarecomp::CpuMode::Arm)!=(fault==0)) return false;
+    bool full_span=false;
+    for (const auto& range : finder.data_ranges())
+        full_span |= range.start==live+0xE0 && range.end==live+0x100;
+    return full_span==(fault==0);
+}
+
 }  // namespace
 
 // Actual GCC Thumb switch encodings, including the PC+4 value at an ADD pc
@@ -585,6 +637,18 @@ int main() {
         std::fprintf(stderr,"Finite byte-index callback records failed: fault=%u\n",fault);
         return 1;
     }
+    for (bool copied : {false,true}) for (unsigned fault=0;fault<5;++fault) {
+        if (!arm_backward_adr_table(copied,fault)) {
+            std::fprintf(stderr,"ARM backward ADR table failed: copied=%u fault=%u\n",copied,fault);
+            return 1;
+        }
+    }
+    for (bool copied : {false,true}) for (unsigned fault=0;fault<4;++fault) {
+        if (!arm_sparse_preceding_table(copied,fault)) {
+            std::fprintf(stderr,"Sparse preceding ARM table failed: copied=%u fault=%u\n",copied,fault);
+            return 1;
+        }
+    }
     for (unsigned fault = 0; fault <= 19; ++fault) {
         if (!referenced_leaf_pair(fault)) {
             std::fprintf(stderr, "Referenced leaf callback pair failed: fault=%u\n", fault);
@@ -627,6 +691,24 @@ int main() {
             std::fprintf(stderr,"Relative callback slots failed: fault=%u\n",fault);
             return 1;
         }
+    }
+    // In a large image, the caller's wrong bias can still point into ROM.
+    // A different declared code copy must supply the callee's source.
+    std::vector<uint8_t> cross_image(0x01000200u,0xFFu);
+    put32(cross_image,0,0xEB3FFFFEu); // BL 03000000 at runtime 02000000
+    put32(cross_image,4,0xE12FFF1Eu);
+    put32(cross_image,0x100u,0xE3A00007u); put32(cross_image,0x104u,0xE12FFF1Eu);
+    gbarecomp::FunctionFinder cross(cross_image.data(),cross_image.size(),kBase);
+    cross.set_speculative_literal_harvest(false);
+    cross.add_code_copy(0x02000000u,kBase,8u,"caller");
+    cross.add_code_copy(0x03000000u,kBase+0x100u,8u,"callee");
+    cross.add_code_copy(0x03000000u,kBase+0x180u,8u,"shadowed mapping");
+    cross.add_seed({0x02000000u,gbarecomp::CpuMode::Arm,"caller"});
+    cross.run(16);
+    const auto* cross_callee=find_function(cross,0x03000000u,gbarecomp::CpuMode::Arm);
+    if (!cross_callee || cross_callee->source_addr!=kBase+0x100u) {
+        std::fprintf(stderr,"Cross-copy call inherited the caller's source bias\n");
+        return 1;
     }
     std::printf("function_finder_tests: PASS\n");
     return 0;

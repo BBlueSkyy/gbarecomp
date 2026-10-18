@@ -608,13 +608,22 @@ std::string emit_function_body_str(
             // dispatch normally.
             ctx.force_bx_c_return = runtime_ram_placement ||
                 bx_c_return_pcs.count(pc) != 0;
+            ctx.runtime_arm_immediate = runtime_ram_placement &&
+                armv4t::ArmCodegen::supports_runtime_arm_immediate(ins);
             std::string emitted = armv4t::ArmCodegen::emit_instr(ins, ctx, &ni);
             if (runtime_ram_placement) {
                 uint32_t opcode = 0;
                 for (uint32_t b = 0; b < step; ++b)
                     opcode |= uint32_t(rom[off + b]) << (8u * b);
                 std::string guard;
-                appendf(guard,
+                if (ctx.runtime_arm_immediate) appendf(guard,
+                    "    if (!runtime_native_ram_instruction_matches_masked("
+                    "_ram_base + %uu, 0x%08Xu, %uu, 0xFFFFF000u)) {\n"
+                    "        g_cpu.R[15] = _ram_base + %uu;\n"
+                    "        GBARECOMP_TAIL_DISPATCH(_ram_base + %uu);\n"
+                    "    }\n",
+                    pc - fn.addr, opcode, step, pc - fn.addr, pc - fn.addr);
+                else appendf(guard,
                     "    if (!runtime_native_ram_instruction_matches("
                     "_ram_base + %uu, 0x%08Xu, %uu)) {\n"
                     "        g_cpu.R[15] = _ram_base + %uu;\n"

@@ -602,12 +602,18 @@ void write_dispatch_table(const std::string& dir,
             std::fprintf(f, "const uint8_t ram_bytes_%zu[] = {", i);
             for (uint8_t b : t.bytes) std::fprintf(f, "%uu,", unsigned(b));
             std::fprintf(f, "};\n");
+            if (!t.masks.empty()) {
+                std::fprintf(f,"const uint8_t ram_masks_%zu[] = {",i);
+                for (uint8_t b : t.masks) std::fprintf(f,"%uu,",unsigned(b));
+                std::fprintf(f,"};\n");
+            }
             const bool thumb = t.function.mode == CpuMode::Thumb;
             const uint32_t step = thumb ? 2u : 4u;
             for (uint32_t offset = 0; offset < t.bytes.size(); offset += step) {
                 uint32_t opcode = 0;
                 for (uint32_t b = 0; b < step; ++b)
-                    opcode |= uint32_t(t.bytes[offset+b]) << (8u*b);
+                    opcode |= uint32_t(t.bytes[offset+b] &
+                        (t.masks.empty() ? 0xFFu : t.masks[offset+b])) << (8u*b);
                 ram_entries.push_back({(uint64_t(opcode)<<1)|unsigned(thumb),
                                        uint32_t(i), offset});
             }
@@ -615,10 +621,11 @@ void write_dispatch_table(const std::string& dir,
         std::fprintf(f, "const RuntimeNativeRamTemplate ram_templates[] = {\n");
         for (std::size_t i = 0; i < ram_templates.size(); ++i) {
             const auto& t = ram_templates[i];
-            std::fprintf(f, "{ram_bytes_%zu, %zuu, %uu, %s, %s},\n", i,
+            const auto masks=t.masks.empty() ? std::string("nullptr") : "ram_masks_"+std::to_string(i);
+            std::fprintf(f, "{ram_bytes_%zu, %zuu, %uu, %s, %s, %s},\n", i,
                 t.bytes.size(), t.function.mode == CpuMode::Thumb ? 1u : 0u,
                 t.function.name.c_str(),t.cart_function.name.empty()
-                    ? "nullptr" : t.cart_function.name.c_str());
+                    ? "nullptr" : t.cart_function.name.c_str(),masks.c_str());
         }
         std::fprintf(f, "};\nconst RuntimeNativeRamEntry ram_entries[] = {\n");
         std::sort(ram_entries.begin(), ram_entries.end(), [&](const auto& a, const auto& b) {
@@ -914,14 +921,14 @@ void write_body(const std::string& dir,
             std::fprintf(f, "/* Byte-verified ROM copy from 0x%08X */\n"
                             "void %s(void) {\n", t.function.source_addr,
                             t.function.name.c_str());
-            const auto body = emit_function_body_str(t.function, rom, rom_size,
-                rom_base, no_direct_names, alu_immediate_override_pcs, mod_function_hook_keys, true);
+            const auto body = emit_function_body_str(t.function, t.bytes.data(), t.bytes.size(),
+                t.function.source_addr, no_direct_names, alu_immediate_override_pcs, mod_function_hook_keys, true);
             std::fwrite(body.data(), 1, body.size(), f);
             std::fprintf(f, "}\n\n");
             if (!t.cart_function.name.empty()) {
                 std::fprintf(f,"void %s(void) {\n",t.cart_function.name.c_str());
-                const auto cart_body=emit_function_body_str(t.cart_function,rom,rom_size,
-                    rom_base,no_direct_names,alu_immediate_override_pcs,mod_function_hook_keys,true);
+                const auto cart_body=emit_function_body_str(t.cart_function,t.bytes.data(),t.bytes.size(),
+                    t.cart_function.source_addr,no_direct_names,alu_immediate_override_pcs,mod_function_hook_keys,true);
                 std::fwrite(cart_body.data(),1,cart_body.size(),f);
                 std::fprintf(f,"}\n\n");
             }
@@ -1534,7 +1541,8 @@ int main(int argc, char** argv) {
         ? std::vector<gbarecomp::RamCodeTemplate>{}
         : gbarecomp::collect_ram_code_templates(emit_funcs, rom.data(), rom.size(),
                                                effective_rom_base, cli.output_prefix,
-                                               &finder.data_ranges(), &finder.code_copies());
+                                                 &finder.data_ranges(), &finder.code_copies(),
+                                                 &finder.constant_code_patches());
     if (!cli.bios_mode)
         std::printf("==> native RAM copy templates: %zu\n", ram_templates.size());
     write_header(cli.out_dir, emit_funcs, ram_templates, names);

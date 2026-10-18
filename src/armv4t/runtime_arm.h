@@ -209,7 +209,8 @@ void runtime_dispatch_miss(uint32_t target_pc);
 #endif
 extern GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_tail_arg;
 
-// AOT bodies for exact ROM instruction fragments in mutable execution windows.
+// AOT bodies for discovered instruction spans in mutable execution windows.
+// Fixed fields are guarded; explicitly supported immediate operands are data.
 // The byte view is observational: no bus read, open-bus update or cycle charge.
 typedef const uint8_t* (*RuntimeRamCodeView)(uint32_t address, uint32_t size);
 extern RuntimeRamCodeView g_runtime_ram_code_view;
@@ -219,9 +220,10 @@ typedef struct RuntimeNativeRamTemplate {
     uint8_t thumb;
     void (*fn)(void);
     void (*cart_fn)(void); // optional body with live cartridge fetch/prefetch
+    const uint8_t* masks;  // null means every byte must match exactly
 } RuntimeNativeRamTemplate;
 typedef struct RuntimeNativeRamEntry {
-    uint64_t key;  // (raw opcode << 1) | thumb, sorted ascending
+    uint64_t key;  // (guarded opcode bits << 1) | thumb, sorted ascending
     uint32_t template_index;
     uint32_t offset;
 } RuntimeNativeRamEntry;
@@ -231,6 +233,9 @@ void runtime_register_native_ram_templates(
 extern GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_native_ram_base;
 int runtime_native_ram_instruction_matches(uint32_t pc, uint32_t opcode,
                                            uint32_t size);
+int runtime_native_ram_instruction_matches_masked(uint32_t pc, uint32_t opcode,
+                                                  uint32_t size, uint32_t mask);
+uint32_t runtime_native_arm_immediate(uint32_t pc);
 void runtime_dispatch_tail(void);                // runtime_dispatch(g_runtime_tail_arg)
 void runtime_dispatch_with_exchange_tail(void);  // runtime_dispatch_with_exchange(g_runtime_tail_arg)
 void runtime_swi_tail(void);                     // runtime_swi(g_runtime_tail_arg)
