@@ -73,5 +73,27 @@ int main() {
         return fail("mode-conflicting mod_function_hook was accepted");
     }
     fs::remove(path, ec);
+    for (const auto* format : {"u8_rel_thumb", "u16_rel_thumb"}) {
+        const unsigned width = std::string(format) == "u8_rel_thumb" ? 1 : 2;
+        const std::string table =
+            "[[jump_table]]\naddr = 0x08000060\ncount = 3\nstride = " +
+            std::to_string(width) + "\nformat = \"" + format +
+            "\"\nentries_mode = \"thumb\"\n";
+        if (!write_file(path, base_config(table + "base = 0x08000012\n")) ||
+            !gbarecomp::load_config(path.string(), cfg) ||
+            cfg.jump_tables.size() != 1 || cfg.jump_tables[0].base != 0x08000012u) {
+            fs::remove(path, ec);
+            return fail("valid relative Thumb table rejected");
+        }
+        for (const auto& invalid : {table, table + "base = 0x08000013\n",
+                                   table + "base = 2\n"}) {
+            if (!write_file(path, base_config(invalid)) ||
+                gbarecomp::load_config(path.string(), cfg)) {
+                fs::remove(path, ec);
+                return fail("invalid relative Thumb table accepted");
+            }
+        }
+    }
+    fs::remove(path, ec);
     return 0;
 }

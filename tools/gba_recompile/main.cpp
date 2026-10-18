@@ -1124,6 +1124,19 @@ int main(int argc, char** argv) {
             finder.add_exclude(ex.addr, ex.reason);
         }
         for (const auto& jt : cfg.jump_tables) {
+            if (jt.format == gbarecomp::JumpTableFormat::U8RelThumb ||
+                jt.format == gbarecomp::JumpTableFormat::U16RelThumb) {
+                if (jt.addr < effective_rom_base ||
+                    static_cast<uint64_t>(jt.addr) +
+                        static_cast<uint64_t>(jt.count) * jt.stride >
+                        static_cast<uint64_t>(effective_rom_base) + rom.size()) {
+                    std::fprintf(stderr, "Thumb relative jump_table outside ROM\n");
+                    return 1;
+                }
+                finder.add_thumb_relative_table(jt.addr, jt.stride, jt.count, jt.base);
+                jump_table_expanded_seeds += jt.count;
+                continue;
+            }
             // Auto-exclude the table's bytes from code decoding.
             const uint32_t table_bytes = jt.count * jt.stride;
             const uint32_t table_end = jt.addr + table_bytes;
@@ -1395,7 +1408,7 @@ int main(int argc, char** argv) {
             std::printf("  auto_jt 0x%08X count=%u stride=%u site=0x%08X "
                         "%s %s\n",
                         jt.base, jt.count, jt.stride, jt.site_pc,
-                        jt.interworking ? "BX" : "MOVpc",
+                        jt.interworking ? "BX" : (jt.stride < 4 ? "ADDpc" : "MOVpc"),
                         jt.bounded ? "bounded" : "walked");
         }
     }
