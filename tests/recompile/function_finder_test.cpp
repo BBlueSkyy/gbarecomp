@@ -45,7 +45,8 @@ const gbarecomp::Function* find_function(
 // Actual GCC Thumb switch encodings, including the PC+4 value at an ADD pc
 // whose address is 2 mod 4. Cases remain labels in their dispatcher host.
 static bool thumb_switch(bool halfword, bool literal, bool manual,
-                         unsigned fault = 0, bool bhi = false) {
+                         unsigned fault = 0, bool bhi = false,
+                         bool late_guard = false) {
     std::vector<std::uint8_t> rom(0x400, 0);
     put16(rom, 0, 0x2803);      // cmp r0,#3
     put16(rom, 2, 0xD21D);     // bcs default at +0x40
@@ -65,7 +66,7 @@ static bool thumb_switch(bool halfword, bool literal, bool manual,
     const unsigned first = halfword ? 0x220 : 0xA0;
     for (unsigned i = 0; i < 3; ++i) {
         const unsigned target = first + 4 * i;
-        const unsigned value = (target - 18) / 2;
+        const unsigned value = (target - (fault == 10 ? 20 : 18)) / 2;
         if (halfword) put16(rom, table + 2 * i, value);
         else rom[table + i] = static_cast<std::uint8_t>(value);
         put16(rom, target, 0x2201 + i);  // movs r2,#case
@@ -83,6 +84,25 @@ static bool thumb_switch(bool halfword, bool literal, bool manual,
         put16(rom, 4, 0xF000); // bl default
         put16(rom, 6, 0xF81C);
         put16(rom, 8, literal ? 0x4B15 : 0xA315); // reload table base after call
+    }
+    if (late_guard || fault == 8 || fault == 9) {
+        put16(rom, 0, 0x0041); // lsls r1,r0,#1 before the guard
+        put16(rom, 2, fault == 8 ? 0x2000 : fault == 9 ? 0xBC01 : 0x46C0);
+        // A bound on a replacement r0 must not constrain the old r1.
+        put16(rom, 4, 0x2803); // cmp r0,#3
+        put16(rom, 6, 0xD21B); // bcs default
+        put16(rom, 8, literal ? 0x4B15 : 0xA315);
+    }
+    if (fault == 10) {
+        put16(rom, 0, 0x0041); // lsls r1,r0,#1
+        put16(rom, 2, 0xF000); // a call can replace the unbounded source
+        put16(rom, 4, 0xF81D);
+        put16(rom, 6, 0x2803); // cmp r0,#3 after the call
+        put16(rom, 8, 0xD21A); // bcs default
+        put16(rom, 10, literal ? 0x4B15 : 0xA315);
+        put16(rom, 12, 0x5A5B);
+        put16(rom, 14, 0x005B);
+        put16(rom, 16, 0x449F);
     }
     gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
     finder.set_speculative_literal_harvest(false);
@@ -121,6 +141,15 @@ int main() {
             }
             if (!thumb_switch(halfword, literal, true)) return 1;
             if (!thumb_switch(halfword, literal, false, 0, true)) return 1;
+            if (halfword) {
+                for (unsigned fault : {0u, 8u, 9u, 10u}) {
+                    if (!thumb_switch(true, literal, false, fault, false, true)) {
+                        std::fprintf(stderr, "Thumb halfword late guard failed: literal=%d fault=%u\n",
+                                     literal, fault);
+                        return 1;
+                    }
+                }
+            }
         }
     }
     std::vector<std::uint8_t> rom(0x80, 0);

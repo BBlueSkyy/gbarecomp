@@ -549,6 +549,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         // so the late bound still sizes the table. 0xFF = no known source.
         uint8_t  src_reg = 0xFF;
         uint64_t relative_bound_epoch = 0;
+        bool relative_source_live = false;
     };
     RegScaled reg_scaled[16];
     struct RegTableAddr {  // Rd = base + (scaled index)
@@ -579,6 +580,11 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
     uint64_t relative_epoch = 1;
     uint64_t relative_bound_epoch[16] = {};
     uint64_t relative_base_epoch[16] = {};
+    auto invalidate_relative_source = [&](uint8_t reg) {
+        for (auto& scaled : reg_scaled) {
+            if (scaled.src_reg == reg) scaled.relative_source_live = false;
+        }
+    };
     // Inverted-guard bound parked for this seed (see header). Re-seed it
     // so the dispatch's scale->add->load chain can size the table.
     {
@@ -1298,7 +1304,8 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                     maxi = reg_scaled[index].max_index;
                     const auto source = reg_scaled[index].src_reg;
                     if (!bounded && reg_scaled[index].known &&
-                        reg_scaled[index].shift == 1 && source < 16 &&
+                        reg_scaled[index].shift == 1 &&
+                        reg_scaled[index].relative_source_live && source < 16 &&
                         reg_bound[source].known &&
                         relative_bound_epoch[source] == relative_epoch) {
                         bounded = true;
@@ -1727,6 +1734,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 reg_scaled[reg].known = false;
                 reg_table[reg].known = false;
                 reg_bound[reg].known = false;
+                invalidate_relative_source(reg);
                 invalidate_mem_base(reg);
                 invalidate_sym_base(reg);
             }
@@ -1736,6 +1744,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 reg_scaled[ins.block.rn].known = false;
                 reg_table[ins.block.rn].known = false;
                 reg_bound[ins.block.rn].known = false;
+                invalidate_relative_source(ins.block.rn);
                 invalidate_mem_base(ins.block.rn);
                 invalidate_sym_base(ins.block.rn);
             }
@@ -1761,6 +1770,12 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         // ADD Rd, PC, #imm  →  track (pc+8 ARM, pc+4 THUMB) + imm
         // Anything else writing Rd  →  invalidate
         if (ins.rd < 16) {
+            // Thumb compares carry their input in Rd in the decoded IR,
+            // but leave the source index intact for a subsequent guard.
+            if (!ins.is_branch &&
+                ins.op != armv4t::IrOp::CMP && ins.op != armv4t::IrOp::CMN &&
+                ins.op != armv4t::IrOp::TST && ins.op != armv4t::IrOp::TEQ)
+                invalidate_relative_source(ins.rd);
             if (ins.op == armv4t::IrOp::MOV &&
                 ins.op2.kind == armv4t::Op2::Kind::Imm) {
                 reg_const[ins.rd].known = true;
@@ -1904,6 +1919,10 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 reg_scaled[ins.rd].src_reg = o.shifted.rm;
                 reg_scaled[ins.rd].relative_bound_epoch =
                     relative_bound_epoch[o.shifted.rm];
+                // A later guard constrains this scale only while its source
+                // still holds the original index. In-place scaling requires
+                // a bound captured before the scale.
+                reg_scaled[ins.rd].relative_source_live = ins.rd != o.shifted.rm;
                 if (reg_bound[o.shifted.rm].known) {
                     reg_scaled[ins.rd].bound_known = true;
                     reg_scaled[ins.rd].max_index =
@@ -1997,6 +2016,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             reg_scaled[ins.mem.rn].known = false;
             reg_table[ins.mem.rn].known = false;
             relative_bound_epoch[ins.mem.rn] = 0;
+            invalidate_relative_source(ins.mem.rn);
             invalidate_mem_base(ins.mem.rn);
             invalidate_sym_base(ins.mem.rn);
         }
@@ -2005,6 +2025,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         if (ins.is_call || ins.op == armv4t::IrOp::SWI) {
             ++relative_epoch;
             relative.active = false;
+            for (auto& scaled : reg_scaled) scaled.relative_source_live = false;
         }
         if (!in_switch_block) fn.end_addr = pc;
 
