@@ -38,6 +38,86 @@ const gbarecomp::Function* find_function(
     return nullptr;
 }
 
+static bool referenced_leaf_pair(unsigned fault) {
+    std::vector<std::uint8_t> rom(0x240, 0);
+    put16(rom, 0, 0x4770); // ordinary reachable entry
+    put32(rom, 0x20, kBase + 0x1C0); // ROM reference to the descriptor
+    put32(rom, 0x1C0, kBase + 0x101); // leaf callback
+    put32(rom, 0x1C4, kBase + 0x141); // non-leaf corroboration
+    put16(rom, 0x100, 0x4803); // ldr r0,[pc,#12] -> RAM-global literal
+    put16(rom, 0x102, 0x6801); // ldr r1,[r0]
+    put16(rom, 0x104, 0x2080); // movs r0,#128
+    put16(rom, 0x106, 0x0100); // lsls r0,r0,#4
+    put16(rom, 0x108, 0x6008); // str r0,[r1]
+    put16(rom, 0x10A, 0x8088); // strh r0,[r1,#4]
+    put16(rom, 0x10C, 0x4770); // bx lr
+    put32(rom, 0x110, 0x03006538);
+    put16(rom, 0x140, 0xB500); // push {lr}
+    for (unsigned off = 0x142; off < 0x14A; off += 2) put16(rom, off, 0x2000);
+    put16(rom, 0x14A, 0xBD00); // pop {pc}
+    if (fault == 1) put32(rom, 0x20, 0); // unreferenced object
+    if (fault == 2) put32(rom, 0x1C4, 0); // only one callback
+    if (fault == 3) put32(rom, 0x1C4, kBase + 0x101); // repeated pointer
+    if (fault == 4) put16(rom, 0x106, 0xE000); // branch in the leaf
+    if (fault == 5) put32(rom, 0x110, kBase + 0x200); // asset literal, not RAM
+    if (fault == 6) put16(rom, 0x10C, 0x4700); // bx r0, not a leaf return
+    if (fault == 7) { put16(rom, 0x108, 0); put16(rom, 0x10A, 0); }
+    if (fault == 8) put16(rom, 0x140, 0xB400); // anchor lacks saved LR
+    if (fault == 9) put32(rom, 0x1C4, kBase + 0x140); // ARM-tagged pointer
+    if (fault == 10) put16(rom, 0x104, 0x2480); // clobbers callee-saved r4
+    if (fault >= 13 && fault <= 17) {
+        put16(rom, 0x160, 0x4901); // separately referenced setter
+        put16(rom, 0x162, 0x6809);
+        put16(rom, 0x164, fault == 15 ? 0 : 0x7088);
+        put16(rom, 0x166, 0x4770);
+        put32(rom, 0x168, fault == 14 ? 0x03006666 : 0x03006538);
+        if (fault != 16) put32(rom, 0x24, kBase + 0x161);
+    }
+    if (fault == 17) { // two non-leaf anchors do not corroborate a RAM global
+        put16(rom, 0x100, 0xB500);
+        put16(rom, 0x10C, 0xBD00);
+    }
+    if (fault == 18) put32(rom, 0x1C0, kBase + 0x181); // beyond executable end
+    if (fault == 19) { // descriptor itself must be outside the executable span
+        put32(rom, 0x20, kBase + 0x120);
+        put32(rom, 0x120, kBase + 0x101);
+        put32(rom, 0x124, kBase + 0x141);
+    }
+    gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
+    finder.set_speculative_literal_harvest(false);
+    if (fault != 11) finder.set_aot_scan_range(kBase + 0x100, kBase + 0x180);
+    if (fault == 12) finder.add_data_range(kBase + 0x100, kBase + 0x10E, "data");
+    finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "entry"});
+    finder.run(64);
+    const bool leaf = has_function(finder, kBase + 0x100, gbarecomp::CpuMode::Thumb);
+    const bool anchor = has_function(finder, kBase + 0x140, gbarecomp::CpuMode::Thumb);
+    if (fault >= 13 && fault <= 17) {
+        const bool setter = has_function(finder, kBase + 0x160, gbarecomp::CpuMode::Thumb);
+        return leaf && anchor && setter == (fault == 13) &&
+            finder.stats().aot_callback_seeds == (fault == 13 ? 3u : 2u);
+    }
+    return fault ? (!leaf && !anchor && finder.stats().aot_callback_seeds == 0)
+                 : (leaf && anchor && finder.stats().aot_callback_seeds == 2 &&
+                    finder.stats().aot_callback_objects == 1 && finder.collisions().empty());
+}
+
+static bool literal_callback(unsigned fault) {
+    std::vector<std::uint8_t> rom(0x100, 0);
+    put16(rom, 0, 0x4800); // callback passed as an argument, no local BX consumer
+    put16(rom, 2, 0x4770);
+    put32(rom, 4, kBase + (fault == 1 ? 0x40 : 0x41));
+    put16(rom, 0x40, fault == 2 ? 0x2000 : 0xB500);
+    for (unsigned off = 0x42; off < 0x4A; off += 2) put16(rom, off, 0x2000);
+    put16(rom, 0x4A, 0xBD00);
+    gbarecomp::FunctionFinder finder(rom.data(), rom.size(), kBase);
+    finder.set_speculative_literal_harvest(false);
+    if (fault != 3) finder.set_aot_scan_range(kBase + 0x40, kBase + (fault == 5 ? 0x48 : 0x80));
+    if (fault == 4) finder.add_data_range(kBase + 0x40, kBase + 0x4C, "data");
+    finder.add_seed({kBase, gbarecomp::CpuMode::Thumb, "entry"});
+    finder.run(64);
+    return has_function(finder, kBase + 0x40, gbarecomp::CpuMode::Thumb) == (fault == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -158,7 +238,7 @@ int main() {
                      "THUMB leaf\n");
         return 1;
     }
-    if (aot.stats().aot_prologue_seeds != 2 ||
+    if (aot.stats().aot_prologue_seeds + aot.stats().aot_callback_seeds != 2 ||
         aot.stats().aot_pointer_tables != 1 ||
         aot.stats().aot_pointer_seeds != 1) {
         std::fprintf(stderr,
@@ -218,6 +298,18 @@ int main() {
         return 1;
     }
 
+    for (unsigned fault = 0; fault <= 5; ++fault) {
+        if (!literal_callback(fault)) {
+            std::fprintf(stderr, "AOT callback literal failed: fault=%u\n", fault);
+            return 1;
+        }
+    }
+    for (unsigned fault = 0; fault <= 19; ++fault) {
+        if (!referenced_leaf_pair(fault)) {
+            std::fprintf(stderr, "Referenced leaf callback pair failed: fault=%u\n", fault);
+            return 1;
+        }
+    }
     std::printf("function_finder_tests: PASS\n");
     return 0;
 }

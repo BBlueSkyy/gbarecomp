@@ -139,6 +139,8 @@ struct FinderStats {
     std::size_t aot_pointer_tables = 0;
     std::size_t aot_pointer_seeds = 0;
     std::size_t aot_code_copy_seeds = 0;
+    std::size_t aot_callback_objects = 0;
+    std::size_t aot_callback_seeds = 0;
     // Mid-function aliasing: entries rolled into a host as resume points
     // (not emitted as standalone functions).
     std::size_t alias_entries_total = 0;
@@ -318,8 +320,10 @@ private:
     bool looks_like_code(uint32_t addr, CpuMode mode, bool strict) const;
     bool is_arm_func_prologue(uint32_t addr) const;
     bool is_thumb_func_prologue(uint32_t addr) const;
-    void harvest_aot_pointer_table(uint32_t table_base);
+    void harvest_aot_reference(uint32_t raw);
     std::vector<FunctionSeed> collect_code_copy_seeds() const;
+    bool is_thumb_ram_leaf(uint32_t addr, uint32_t* ram_global = nullptr) const;
+    std::vector<FunctionSeed> collect_referenced_callback_seeds();
     void discover_one(uint32_t addr, CpuMode mode,
                       const std::string& name,
                       uint32_t source_addr = 0,
