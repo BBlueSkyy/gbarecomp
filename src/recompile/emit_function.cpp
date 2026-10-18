@@ -194,7 +194,8 @@ std::string emit_function_body_str(
     const std::unordered_map<uint64_t, std::string>& func_names_by_key,
     const std::unordered_set<uint32_t>*
         alu_immediate_override_pcs,
-    const std::unordered_set<uint64_t>* mod_function_hook_keys) {
+    const std::unordered_set<uint64_t>* mod_function_hook_keys,
+    bool runtime_ram_placement) {
     std::string out;
 
     const uint32_t step = (fn.mode == CpuMode::Thumb) ? 2u : 4u;
@@ -203,6 +204,10 @@ std::string emit_function_body_str(
     ctx.current_function_addr = fn.addr;
     ctx.current_function_end_addr = fn.end_addr;
     ctx.current_function_thumb = (fn.mode == CpuMode::Thumb);
+    if (runtime_ram_placement) {
+        ctx.runtime_pc_base = "_ram_base";
+        appendf(out, "    const uint32_t _ram_base = g_runtime_native_ram_base;\n");
+    }
     ctx.alu_immediate_override_pcs = alu_immediate_override_pcs;
     const uint32_t fn_source_addr = fn.source_addr ? fn.source_addr : fn.addr;
     std::vector<FunctionBlock> blocks = fn.switch_blocks;
@@ -352,7 +357,8 @@ std::string emit_function_body_str(
     // starts at the BX and would otherwise miss the stack-pop return idiom.
     // Seed the previous instruction from ROM so the first decoded instruction
     // in this function can still be classified correctly.
-    if (fn_source_addr >= rom_base && (fn_source_addr - rom_base) >= step) {
+    if (!runtime_ram_placement && fn_source_addr >= rom_base &&
+        (fn_source_addr - rom_base) >= step) {
         const uint32_t prev_pc = fn.addr - step;
         std::size_t prev_off = 0;
         if (source_offset_for(prev_pc, step, &prev_off)) {
@@ -484,7 +490,7 @@ std::string emit_function_body_str(
         }
 
     }
-    ctx.idle_backedge_pcs = &idle_backedge_pcs;
+    ctx.idle_backedge_pcs = runtime_ram_placement ? nullptr : &idle_backedge_pcs;
     ctx.link_branch_targets = &link_branch_targets;
 
     uint32_t pc = fn.addr;
@@ -533,13 +539,22 @@ std::string emit_function_body_str(
     // arguments. nullptr (default) = one not-taken branch, guest-state
     // byte-identical. Keyed by the function entry PC so a host probe can
     // dispatch per-function (e.g. widescreen tilemap provenance).
-    appendf(out,
-        "    if (g_runtime_fn_entry_hook) g_runtime_fn_entry_hook(0x%08Xu);\n",
-        fn.addr);
+    if (runtime_ram_placement) {
+        appendf(out,
+            "    if (g_runtime_fn_entry_hook) g_runtime_fn_entry_hook(_ram_base);\n");
+    } else {
+        appendf(out,
+            "    if (g_runtime_fn_entry_hook) g_runtime_fn_entry_hook(0x%08Xu);\n",
+            fn.addr);
+    }
     for (const auto& span : spans) {
         pc = span.start;
         ctx.current_function_addr = span.start;
         ctx.current_function_end_addr = span.end;
+        if (runtime_ram_placement) {
+            ctx.runtime_pc_base = "(_ram_base + " +
+                std::to_string(span.start - fn.addr) + "u)";
+        }
         while (pc < span.end) {
             std::size_t off = 0;
             if (!source_offset_for(pc, step, &off)) break;
@@ -564,8 +579,27 @@ std::string emit_function_body_str(
             appendf(out, "    /* %08X  %s */\n", pc, line.c_str());
 
             bool ni = false;
-            ctx.force_bx_c_return = bx_c_return_pcs.count(pc) != 0;
+            // A verified RAM fragment can begin at any instruction, including
+            // a BX whose preceding POP belongs to another fragment. Matching
+            // the live guest return stack is sufficient; other targets still
+            // dispatch normally.
+            ctx.force_bx_c_return = runtime_ram_placement ||
+                bx_c_return_pcs.count(pc) != 0;
             std::string emitted = armv4t::ArmCodegen::emit_instr(ins, ctx, &ni);
+            if (runtime_ram_placement) {
+                uint32_t opcode = 0;
+                for (uint32_t b = 0; b < step; ++b)
+                    opcode |= uint32_t(rom[off + b]) << (8u * b);
+                std::string guard;
+                appendf(guard,
+                    "    if (!runtime_native_ram_instruction_matches("
+                    "_ram_base + %uu, 0x%08Xu, %uu)) {\n"
+                    "        g_cpu.R[15] = _ram_base + %uu;\n"
+                    "        GBARECOMP_TAIL_DISPATCH(_ram_base + %uu);\n"
+                    "    }\n",
+                    pc - fn.addr, opcode, step, pc - fn.addr, pc - fn.addr);
+                emitted = guard + emitted;
+            }
             if (has_aliases) {
                 // Block-scope each instruction so the resume prologue's forward
                 // goto crosses no in-scope local initialization (goto-legal C++).
@@ -599,11 +633,18 @@ std::string emit_function_body_str(
         // the exec loop with PC unchanged and re-dispatch the same
         // function forever. The trailing dispatch hands control to the
         // adjacent function via the dispatch table.
-        appendf(out,
-            "    /* fall-through to 0x%08X */\n"
-            "    g_cpu.R[15] = 0x%08Xu;\n"
-            "    GBARECOMP_TAIL_DISPATCH(0x%08Xu);\n",
-            span.end, span.end, span.end);
+        if (runtime_ram_placement) {
+            appendf(out,
+                "    g_cpu.R[15] = _ram_base + %uu;\n"
+                "    GBARECOMP_TAIL_DISPATCH(_ram_base + %uu);\n",
+                span.end - fn.addr, span.end - fn.addr);
+        } else {
+            appendf(out,
+                "    /* fall-through to 0x%08X */\n"
+                "    g_cpu.R[15] = 0x%08Xu;\n"
+                "    GBARECOMP_TAIL_DISPATCH(0x%08Xu);\n",
+                span.end, span.end, span.end);
+        }
     }
 
     return out;

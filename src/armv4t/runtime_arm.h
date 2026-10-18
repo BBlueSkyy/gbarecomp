@@ -208,6 +208,28 @@ void runtime_dispatch_miss(uint32_t target_pc);
 #  define GBARECOMP_TAIL_ARG_TLS _Thread_local
 #endif
 extern GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_tail_arg;
+
+// AOT bodies for exact ROM instruction fragments copied to moving RAM slots.
+// The byte view is observational: no bus read, open-bus update or cycle charge.
+typedef const uint8_t* (*RuntimeRamCodeView)(uint32_t address, uint32_t size);
+extern RuntimeRamCodeView g_runtime_ram_code_view;
+typedef struct RuntimeNativeRamTemplate {
+    const uint8_t* bytes;
+    uint32_t size;
+    uint8_t thumb;
+    void (*fn)(void);
+} RuntimeNativeRamTemplate;
+typedef struct RuntimeNativeRamEntry {
+    uint64_t key;  // (raw opcode << 1) | thumb, sorted ascending
+    uint32_t template_index;
+    uint32_t offset;
+} RuntimeNativeRamEntry;
+void runtime_register_native_ram_templates(
+    const RuntimeNativeRamTemplate* templates, uint32_t template_count,
+    const RuntimeNativeRamEntry* entries, uint32_t entry_count);
+extern GBARECOMP_TAIL_ARG_TLS uint32_t g_runtime_native_ram_base;
+int runtime_native_ram_instruction_matches(uint32_t pc, uint32_t opcode,
+                                           uint32_t size);
 void runtime_dispatch_tail(void);                // runtime_dispatch(g_runtime_tail_arg)
 void runtime_dispatch_with_exchange_tail(void);  // runtime_dispatch_with_exchange(g_runtime_tail_arg)
 void runtime_swi_tail(void);                     // runtime_swi(g_runtime_tail_arg)

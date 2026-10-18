@@ -119,8 +119,16 @@ reason = "literal pool walked as code by finder pre-vX.Y"
 | `entry_pc`     | int hex | Initial PC. Seeded as `[[extra_func]]` automatically; declaring it again is a redundant no-op. |
 | `speculative_literal_harvest` | bool | Optional, default `true`. Harvest plausible callback pointers from PC-relative literal loads. Set `false` for evidence-driven strict-static corpora where runtime-observed `[[extra_func]]` roots are preferred over speculative reachability. Direct branch discovery is unchanged. |
 | `aot_scan_start` / `aot_scan_end` | int hex | Optional half-open executable-ROM range. Reachable PC-relative literals can identify callback tables or directly reference a tagged Thumb PUSH-LR callback passed to a helper. Referenced ROM objects outside the range also qualify when their first two words are distinct Thumb callbacks: at least one PUSH-LR entry, paired with another PUSH-LR entry or a short stackless RAM-global leaf (store and BX LR, no calls or other branches). Separately address-taken leaves must use the exact RAM-global literal corroborated by a descriptor. Only the two descriptor words are inspected; no table end is guessed. Keep compressed graphics and other assets outside the executable range. Omit both fields to disable this discovery. |
-| `static_resume_all` | bool | Optional, default `false`. Add a static dispatch/resume entry for every aligned instruction inside each emitted native body. Enable this for strict end-to-end AOT builds because an IRQ or SWI may resume at any instruction boundary. |
+| `static_resume_all` | bool | Optional, default `true`. Add a static dispatch/resume entry for every aligned instruction inside each emitted native body. IRQ/SWI returns and host-stack unwinds may resume at any instruction boundary. Explicitly disabling this is for discovery experiments and does not guarantee strict end-to-end AOT coverage. |
 | `codegen_shards` | int | Optional cartridge override, range 2..256. When omitted or `0`, the recompiler chooses an adaptive power-of-two count from 2..64. Cartridge output is never monolithic. `1` is accepted only as legacy input and upgraded to the adaptive count with a warning. Stable address hashing and write-if-changed output keep unrelated shards untouched when a reviewed seed is added. BIOS output remains one small translation unit. |
+
+With an executable AOT scan range, discovery also recognizes base-relative
+Thumb callback tables. A reachable `LDR offset,[base,#slot]; ADD target,base,offset;
+BL <BX-target veneer>` supplies each exact slot offset. A table base loaded by
+reachable code qualifies only when slot zero and another consumed slot resolve
+to distinct validated PUSH-LR entries inside that range. Only consumed slots
+are inspected; neighboring tables are not scanned for an end. This handles
+negative as well as positive table-relative offsets.
 
 ### `[identity]` (required)
 
@@ -272,6 +280,18 @@ addresses while reading opcodes from the source bytes.
 | `size`          | int hex | yes      | Number of copied bytes. |
 | `name`          | string  | no       | Mapping label (documentation). |
 | `note`          | string  | no       | Free-form documentation. |
+
+The recompiler also emits position-aware native fragments for discovered
+address-taken code and ROM-backed copies, including their direct branch and
+fall-through continuations. These fragments support helpers copied onto a
+moving EWRAM or IWRAM stack without a fixed `runtime_start` hint. They use the
+live RAM PC for operands, literal alignment, links, branches, IRQ resumes and
+fetch timing. The runtime compares the complete fragment against raw RAM before
+entry and checks each instruction again before execution. Changed or unknown
+bytes return to normal dispatch and remain a loud strict-static miss unless
+another AOT fragment matches. Matching has no bus-read or timing side effects;
+it never decodes or compiles code at runtime. No additional configuration is
+required. BIOS compilation remains separate.
 
 ### `[[jump_table]]` (zero or more)
 

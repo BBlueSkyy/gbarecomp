@@ -53,7 +53,7 @@ struct ConfigProgram {
     uint32_t    aot_scan_end = 0;
     // Emit native resume entries for every instruction boundary so IRQ/SWI
     // returns never require interpreter or self-heal fallback.
-    bool        static_resume_all = false;
+    bool        static_resume_all = true;
     // Number of deterministic C++ translation units used for emitted guest
     // bodies. Zero selects the adaptive cartridge default. Cartridge output
     // is never monolithic; BIOS output remains one small translation unit.

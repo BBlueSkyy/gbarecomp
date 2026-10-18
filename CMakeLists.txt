@@ -263,6 +263,7 @@ set_property(TARGET gbarecomp_armv4t PROPERTY POSITION_INDEPENDENT_CODE ON)
 add_library(gbarecomp_recompile_core STATIC
     src/recompile/function_finder.cpp
     src/recompile/emit_function.cpp
+    src/recompile/ram_templates.cpp
     src/recompile/codegen_shards.cpp
     src/recompile/dispatch_table_entries.cpp
 )
@@ -897,6 +898,10 @@ add_executable(function_finder_tests tests/recompile/function_finder_test.cpp)
 target_link_libraries(function_finder_tests PRIVATE gbarecomp_recompile_core)
 add_test(NAME function_finder_tests COMMAND function_finder_tests)
 
+add_executable(ram_templates_tests tests/recompile/ram_templates_test.cpp)
+target_link_libraries(ram_templates_tests PRIVATE gbarecomp_recompile_core)
+add_test(NAME ram_templates_tests COMMAND ram_templates_tests)
+
 add_executable(link_branch_tests tests/recompile/link_branch_test.cpp)
 target_link_libraries(link_branch_tests PRIVATE gbarecomp_recompile_core)
 add_test(NAME link_branch_tests COMMAND link_branch_tests)
@@ -1054,7 +1059,7 @@ add_executable(gen_codegen_tests
 target_include_directories(gen_codegen_tests PRIVATE
     tests/codegen
     src/armv4t)
-target_link_libraries(gen_codegen_tests PRIVATE gbarecomp_armv4t)
+target_link_libraries(gen_codegen_tests PRIVATE gbarecomp_recompile_core)
 
 # NOTE: must not collide with the codegen_tests TARGET name. On Windows the
 # executable gains a .exe suffix so a same-named directory is harmless, but on

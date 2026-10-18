@@ -29,6 +29,7 @@
 #include "arm_decode.h"
 #include "arm_ir.h"
 #include "thumb_decode.h"
+#include "emit_function.h"
 
 namespace {
 
@@ -68,14 +69,19 @@ int emit(FILE* f, const char* out_path) {
     // Per-test function bodies.
     for (std::size_t i = 0; i < kTestCasesCount; ++i) {
         const TestCase& tc = kTestCases[i];
-        armv4t::Instr ins = decode_one(tc);
+        TestCase canonical = tc;
+        if (tc.runtime_pc_base) canonical.pc = 0x03000000u;
+        armv4t::Instr ins = decode_one(canonical);
         armv4t::CodegenCtx ctx{};
-        ctx.current_function_addr = tc.pc;
+        ctx.current_function_addr = canonical.pc;
+        ctx.current_function_end_addr = canonical.pc + (tc.thumb ? 2u : 4u);
+        if (tc.runtime_pc_base) ctx.runtime_pc_base = "_runtime_base";
         ctx.alu_immediate_override_pcs =
             &thumb_alu_immediate_override_pcs;
         bool not_implemented = false;
         std::string body = armv4t::ArmCodegen::emit_instr(
             ins, ctx, &not_implemented);
+        if (tc.runtime_pc_base) body = "    const uint32_t _runtime_base = g_cpu.R[15];\n" + body;
         for (std::size_t trace_pos = body.find("runtime_trace_event(");
              trace_pos != std::string::npos;
              trace_pos = body.find("runtime_trace_event(",
@@ -167,6 +173,22 @@ int emit(FILE* f, const char* out_path) {
             "    codegen_test_fellthrough();\n"
             "}\n\n",
             i, tc.name, tc.pc, i, body.c_str());
+    }
+    // Whole native RAM fragments: the first instruction changes the following
+    // instruction. Both byte sequences are AOT bodies, never runtime codegen.
+    for (unsigned variant = 0; variant < 2; ++variant) {
+        const uint8_t image[] = {0x01, 0x80, uint8_t(1u+variant), 0x22, 0x70, 0x47};
+        gbarecomp::Function fn{};
+        fn.addr = 0x03000000u;
+        fn.source_addr = 0x08000000u;
+        fn.end_addr = fn.walk_end_addr = fn.addr + sizeof(image);
+        fn.mode = gbarecomp::CpuMode::Thumb;
+        fn.alias_entries = {fn.addr+2, fn.addr+4};
+        const std::unordered_map<uint64_t, std::string> empty;
+        const auto body = gbarecomp::emit_function_body_str(fn, image, sizeof(image),
+            fn.source_addr, empty, nullptr, nullptr, true);
+        std::fprintf(f, "extern \"C\" void ram_mutation_fixture_%u(void) {\n%s}\n",
+                     variant, body.c_str());
     }
     std::fprintf(f, "extern \"C\" const TestFn kRomTestFns[] = {\n");
     for (std::size_t i = 0; i < kTestCasesCount; ++i) {

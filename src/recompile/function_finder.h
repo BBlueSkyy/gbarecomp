@@ -315,8 +315,10 @@ private:
     std::vector<FunctionSeed>        aot_pointer_seeds_;
     std::unordered_set<uint32_t>     aot_seen_pointer_tables_;
     std::unordered_set<uint64_t>     aot_seen_seed_keys_;
+    std::unordered_set<uint32_t> relative_callback_bases_, relative_callback_slots_;
+    bool relative_callbacks_dirty_ = false;
     bool speculative_literal_harvest_enabled_ = true;
-    bool static_resume_all_ = false;
+    bool static_resume_all_ = true;
     uint32_t aot_scan_start_ = 0;
     uint32_t aot_scan_end_ = 0;
 
@@ -339,6 +341,7 @@ private:
     bool is_arm_func_prologue(uint32_t addr) const;
     bool is_thumb_func_prologue(uint32_t addr) const;
     void harvest_aot_reference(uint32_t raw);
+    void harvest_relative_callbacks();
     std::vector<FunctionSeed> collect_code_copy_seeds() const;
     bool is_thumb_ram_leaf(uint32_t addr, uint32_t* ram_global = nullptr) const;
     std::vector<FunctionSeed> collect_referenced_callback_seeds();

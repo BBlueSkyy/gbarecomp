@@ -266,6 +266,20 @@ void sync_bios_access() {
 
 void set_active_bus(gba::GbaBus* bus) {
     g_active_bus = bus;
+    g_runtime_ram_code_view = [](uint32_t address, uint32_t size) -> const uint8_t* {
+        if (!g_active_bus) return nullptr;
+        if ((address >> 24) == 2u) {
+            const uint32_t offset = address & 0x3FFFFu;
+            if (size <= 0x40000u - offset)
+                return g_active_bus->ewram_ptr() + offset;
+        } else if ((address >> 24) == 3u) {
+            const uint32_t offset = address & 0x7FFFu;
+            if (size <= 0x8000u - offset)
+                return g_active_bus->iwram_ptr() + offset;
+        }
+        // Do not invent a contiguous view across a physical mirror boundary.
+        return nullptr;
+    };
     if (bus) {
         bus->bind_wait_table(&g_runtime_waits);
     } else if (gba::GbaBus* owner = gba::GbaBus::wait_table_owner()) {
