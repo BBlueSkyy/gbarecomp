@@ -16,6 +16,7 @@ using HighResolutionAffineProvider = bool (*)(int bg, int screen_y);
 class GbaHighResolutionFrame {
 public:
     static constexpr unsigned kMaxScale = 16;
+    static const char* sampler_implementation();
     explicit GbaHighResolutionFrame(unsigned scale);
     unsigned scale() const { return scale_; }
     void configure(unsigned width, unsigned height);
@@ -49,9 +50,18 @@ private:
     struct Affine {
         bool active = false;
         uint16_t cnt = 0;
+        unsigned cache = 0;
         int y = -2;
         int64_t x = 0, v = 0, pa = 0, pc = 0;
         int64_t dx = 0, dv = 0, dpa = 0, dpc = 0;
+    };
+    // Presentation-owned indexed surfaces. Palette colors are refreshed at each
+    // published row, so HBlank palette writes never require a surface rebuild.
+    struct Surface {
+        unsigned layout = ~0u, size = 0;
+        std::array<uint8_t, 16384> chars{};
+        std::vector<uint8_t> map, texels;
+        void update(uint16_t cnt, const uint8_t* vram);
     };
     static void insert(Pixel& top, Pixel& second, const Pixel& candidate);
     bool sample(const Affine& bg, int64_t u, int64_t v, uint16_t& color) const;
@@ -64,6 +74,9 @@ private:
     const uint8_t* vram_ = nullptr;
     const uint8_t* pal_ = nullptr;
     std::array<Affine, 2> previous_{}, affine_{};
+    std::array<Surface, 2> surfaces_;
+    std::array<uint16_t, 256> palette_{};
+    std::array<uint64_t, 256> filter_palette_{};
     std::vector<Pixel> top_, second_;
     std::vector<uint8_t> windows_, black_, written_, work_, latched_, scratch_;
     unsigned written_lines_ = 0;

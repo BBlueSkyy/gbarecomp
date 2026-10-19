@@ -14,6 +14,7 @@ function(gbarecomp_target_netplay_identity target game_root generated_root)
     # Implementation selection is fixed by the build. Keep different choices
     # distinct until a shared simulation profile is separately qualified.
     string(APPEND identity "scanline=${GBARECOMP_SCANLINE_IMPLEMENTATION}\n")
+    string(APPEND identity "hd-sampler=${GBARECOMP_HD_SAMPLER_IMPLEMENTATION}\n")
     foreach(group engine game generated network rollback)
         if(group STREQUAL "engine")
             set(root "${engine_root}/src")

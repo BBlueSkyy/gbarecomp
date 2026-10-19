@@ -68,17 +68,38 @@ of the pixel loop. Each quotient retains C++ signed truncation in the original
 order. Per-pixel coordinates advance by addition. This uses portable C++, with
 no CPU-specific dependency or floating-point result.
 
-The MKSC pilot rejected a per-row decoded tile cache: it added work without a
-measured gain. No cache lifetime/invalidation contract was added to shipping
-source. A GPU affine renderer remains a possible next step if measured host
-headroom is inadequate; it is not needed to enable this implementation.
+`GBARECOMP_HD_SAMPLER_IMPLEMENTATION=HLE` selects the persistent indexed-surface
+sampler. `LLE` builds the maintained direct tile/map/palette sampler. Startup
+reports `hd_sampler_backend`; the choice also enters strict source identity.
+There is no runtime HLE/LLE control or state handoff. This choice is independent
+of the native compositor selection above.
+
+The HLE surface expands the affine tilemap into a linear array of palette
+indices. At every published row it compares the relevant character and map
+bytes with its private snapshots, then updates cells whose map entry or source
+tile changed. It refreshes palette colors every row, including palette bit 15.
+Direct memory and DMA writes are observed without relying on bus write hooks.
+Layout changes and invalidation discard cached assumptions. None of this cache
+is serialized or consulted by guest reads.
+
+Filtered samples use three independent 21-bit lanes in a portable unsigned
+64-bit integer. Each lane's maximum weighted sum plus rounding is below
+2^21, so the channels cannot carry into one another. Four multiplies replace
+twelve while retaining integer rounding, transparency and edge behavior.
+Rows without enhanced affine content are expanded horizontally once and copied
+to their remaining subrows. Both optimizations belong to the HLE build choice.
+
+The original 4x pilot rejected a different, per-row decoded tile cache. That
+result does not assess this persistent surface. A GPU affine service remains
+a further opportunity if the measured CPU path cannot meet the desired scale.
 
 ## Validation
 
 Build `high_resolution_tests`, `bus_tests` and `multiplayer_view_tests` under
-both compositor selections. The focused raster fixture checks 2x/3x/4x samples,
+both sampler and compositor selections. The focused raster fixture checks
+2x/3x/4x/8x/16x samples,
 extra texels absent at native density, original sample parity, HUD/alpha,
-negative margins, per-row VRAM/palette changes, canonical device-state equality
+negative margins, per-row character/map/palette and layout changes, canonical device-state equality
 and reset/partial-raster/resize behavior. The mirror fixture checks independent
 local dimensions and canonical state equality through restore.
 

@@ -14,6 +14,38 @@ int64_t ref28(const uint8_t* p) {
 }
 int64_t delta28(int64_t n) { return int32_t(uint32_t(n) << 4) >> 4; }
 }
+const char* GbaHighResolutionFrame::sampler_implementation() {
+#if defined(GBARECOMP_HD_SAMPLER_HLE)
+    return "HLE (cached indexed affine surface)";
+#else
+    return "LLE (direct tiled affine sampling)";
+#endif
+}
+void GbaHighResolutionFrame::Surface::update(uint16_t cnt, const uint8_t* vram) {
+    const unsigned next_layout = cnt & 0xdf0c; // size, map and character bases
+    const bool reset = layout != next_layout;
+    size = 128u << (cnt >> 14);
+    const auto* source_chars = vram + ((cnt >> 2) & 3) * 0x4000;
+    const auto* source_map = vram + ((cnt >> 8) & 31) * 0x800;
+    const unsigned tiles = size / 8, entries = tiles * tiles;
+    if (!reset && std::memcmp(chars.data(), source_chars, chars.size()) == 0 &&
+        std::memcmp(map.data(), source_map, entries) == 0) return;
+    std::array<bool, 256> dirty{};
+    for (unsigned tile = 0; tile < dirty.size(); ++tile)
+        dirty[tile] = reset || std::memcmp(chars.data() + tile * 64,
+                                         source_chars + tile * 64, 64) != 0;
+    map.resize(entries); texels.resize(size_t(size) * size);
+    for (unsigned entry = 0; entry < entries; ++entry) {
+        const unsigned tile = source_map[entry];
+        if (!reset && map[entry] == tile && !dirty[tile]) continue;
+        auto* dst = texels.data() + (entry / tiles) * 8 * size + (entry % tiles) * 8;
+        for (unsigned row = 0; row < 8; ++row)
+            std::memcpy(dst + row * size, source_chars + tile * 64 + row * 8, 8);
+    }
+    std::memcpy(chars.data(), source_chars, chars.size());
+    std::memcpy(map.data(), source_map, entries);
+    layout = next_layout;
+}
 GbaHighResolutionFrame::GbaHighResolutionFrame(unsigned scale) : scale_(scale) {
     if (scale < 2 || scale > kMaxScale)
         throw std::invalid_argument("internal resolution must be from 1 through 16");
@@ -32,6 +64,7 @@ void GbaHighResolutionFrame::configure(unsigned width, unsigned height) {
 }
 void GbaHighResolutionFrame::invalidate() {
     complete_ = false;
+    for (auto& surface : surfaces_) surface.layout = ~0u;
     begin_frame();
 }
 void GbaHighResolutionFrame::begin_frame() {
@@ -55,7 +88,7 @@ bool GbaHighResolutionFrame::begin_line(int y, unsigned ox, unsigned oy,
         }
         auto& a = affine_[i];
         const unsigned param = 0x20 + i * 0x10;
-        a.active = true; a.y = y; a.cnt = u16(io + 0x0c + i * 2);
+        a.active = true; a.y = y; a.cnt = u16(io + 0x0c + i * 2); a.cache = i;
         a.pa = int16_t(u16(io + param)); a.pc = int16_t(u16(io + param + 4));
         a.dx = int16_t(u16(io + param + 2)); a.dv = int16_t(u16(io + param + 6));
         // The PPU supplies its effective current reference, expressed through
@@ -102,9 +135,47 @@ void GbaHighResolutionFrame::submit(unsigned x, uint16_t color, int key,
     if (selected_ & (1u << layer)) return;
     insert(top_[x], second_[x], {color, key, layer, target1, target2, true});
 }
+// Keep the cached sample inside the subpixel loop so the compiler can hoist
+// the row's fixed palette/surface/layout inputs and avoid a call per sample.
+// Other compilers retain the same portable implementation without this hint.
+#if defined(GBARECOMP_HD_SAMPLER_HLE) && defined(_MSC_VER)
+__forceinline
+#elif defined(GBARECOMP_HD_SAMPLER_HLE) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((always_inline)) inline
+#endif
 bool GbaHighResolutionFrame::sample(const Affine& a, int64_t u, int64_t v,
                                     uint16_t& color) const {
     const unsigned size = 128u << (a.cnt >> 14);
+#if defined(GBARECOMP_HD_SAMPLER_HLE)
+    int64_t x = u >> 8, y = v >> 8;
+    const bool wrap = a.cnt & 0x2000;
+    if (wrap) { x &= size - 1; y &= size - 1; }
+    else if (x < 0 || y < 0 || x >= size || y >= size) return false;
+    const auto* texels = surfaces_[a.cache].texels.data();
+    const unsigned c00 = texels[size_t(y) * size + size_t(x)];
+    if (!c00) return false;
+    color = palette_[c00];
+    if (!filter_) return true;
+    unsigned x1 = unsigned(x + 1), y1 = unsigned(y + 1);
+    if (wrap) { x1 &= size - 1; y1 &= size - 1; }
+    else if (x1 == size || y1 == size) return true;
+    const unsigned c10 = texels[size_t(y) * size + x1];
+    const unsigned c01 = texels[size_t(y1) * size + size_t(x)];
+    const unsigned c11 = texels[size_t(y1) * size + x1];
+    if (!c10 || !c01 || !c11) return true;
+    const unsigned fx = unsigned(u) & 255, fy = unsigned(v) & 255;
+    // Three independent 21-bit lanes fit in uint64_t. Each weighted channel
+    // sums to at most 31*65536; adding 32768 still cannot carry into its
+    // neighbor. This performs all three exact integer filters in four
+    // portable multiplies, including the original rounding and bit-15 loss.
+    constexpr uint64_t round = (uint64_t(1) | (uint64_t(1) << 21) | (uint64_t(1) << 42)) * 32768;
+    const uint64_t sum = filter_palette_[c00] * ((256 - fx) * (256 - fy)) +
+                         filter_palette_[c10] * (fx * (256 - fy)) +
+                         filter_palette_[c01] * ((256 - fx) * fy) +
+                         filter_palette_[c11] * (fx * fy) + round;
+    color = uint16_t(((sum >> 16) & 31) | (((sum >> 37) & 31) << 5) | (((sum >> 58) & 31) << 10));
+    return true;
+#else
     const unsigned chars = ((a.cnt >> 2) & 3) * 0x4000;
     const unsigned map = ((a.cnt >> 8) & 31) * 0x800;
     auto texel = [&](int64_t x, int64_t y, uint16_t& c) {
@@ -134,6 +205,7 @@ bool GbaHighResolutionFrame::sample(const Affine& a, int64_t u, int64_t v,
         result |= uint16_t(((sum + 0x8000) >> 16) << shift);
     }
     color = result; return true;
+#endif
 }
 void GbaHighResolutionFrame::write_color(uint8_t* dst, const Pixel& top,
                                         const Pixel& second) const {
@@ -150,6 +222,13 @@ void GbaHighResolutionFrame::wrote_line(unsigned y) {
     if (y < height_ && !written_[y]) { written_[y] = 1; ++written_lines_; }
 }
 void GbaHighResolutionFrame::resolve() {
+#if defined(GBARECOMP_HD_SAMPLER_HLE)
+    for (const auto& a : affine_) if (a.active) surfaces_[a.cache].update(a.cnt, vram_);
+    for (unsigned i = 0; i < palette_.size(); ++i) {
+        const uint16_t c = palette_[i] = u16(pal_ + i * 2);
+        filter_palette_[i] = (c & 31) | (uint64_t((c >> 5) & 31) << 21) | (uint64_t((c >> 10) & 31) << 42);
+    }
+#endif
     for (unsigned sy = 0; sy < scale_; ++sy) {
         struct Row {
             int64_t u = 0, v = 0, pa = 0, pc = 0;
@@ -198,6 +277,12 @@ void GbaHighResolutionFrame::resolve() {
 void GbaHighResolutionFrame::upscale_line(unsigned y, const uint8_t* native_row) {
     for (unsigned sy = 0; sy < scale_; ++sy) {
         auto* dst = work_.data() + size_t(y * scale_ + sy) * width() * 3;
+#if defined(GBARECOMP_HD_SAMPLER_HLE)
+        if (sy) {
+            std::memcpy(dst, work_.data() + size_t(y * scale_) * width() * 3, size_t(width()) * 3);
+            continue;
+        }
+#endif
         for (unsigned x = 0; x < width_; ++x)
             for (unsigned sx = 0; sx < scale_; ++sx, dst += 3)
                 std::memcpy(dst, native_row + x * 3, 3);
