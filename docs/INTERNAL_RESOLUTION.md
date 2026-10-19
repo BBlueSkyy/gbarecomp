@@ -34,6 +34,10 @@ SDL's sampled texture dimensions are separate from logical screen dimensions.
 A 382x160 adaptive view at 4x uploads 1528x640 directly. Aspect/layout/touch
 coordinates remain in logical units. Color grading operates on the sampled
 texture; the native sharp-prescale stage is unnecessary for enhanced textures.
+The browser host keeps its existing logical-size shared-memory slots and
+samples the supplied raster back onto that native grid. Its overload accepts
+the sampled stride correctly; enhanced-density browser display awaits a
+separate shared-memory protocol extension. Desktop SDL presents the full raster.
 
 Netplay uses the existing read-only presentation observer and private mirror.
 Each canonical PPU remains native. Local scale and window geometry do not enter

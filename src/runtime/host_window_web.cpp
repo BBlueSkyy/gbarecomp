@@ -15,6 +15,7 @@
 #include <memory>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 namespace gbarecomp {
 namespace {
@@ -26,6 +27,7 @@ struct Backend {
     bool assist=true, resize=false;
     int turbo=4;
     std::unique_ptr<runtime::ColorLut> lut;
+    std::vector<uint8_t> sampled_native;
     // Touch (touch_input.h). The page owns the virtual pad (its presses arrive
     // in `keys` through the touch mask) and forwards every other pointer
     // through the touch ring; pump() feeds those to the TouchHub.
@@ -330,6 +332,24 @@ void HostWindow::present(const uint8_t* rgb) {
     }
     const auto old=s.control.middle.exchange(b.back|Dirty,std::memory_order_acq_rel);
     b.back=old&3; if(old&Dirty)++s.control.replaced; ++s.control.published;
+}
+void HostWindow::present(const uint8_t* rgb,unsigned sampled_w,unsigned sampled_h) {
+    if(!impl_||!rgb)return;
+    auto& b=*backend(impl_);
+    if(!sampled_w)sampled_w=b.width;
+    if(!sampled_h)sampled_h=b.height;
+    if(sampled_w==unsigned(b.width)&&sampled_h==unsigned(b.height)) { present(rgb);return; }
+    // The browser shared-memory protocol has fixed logical-size slots. Keep
+    // its portable native-density fallback until an enhanced-slot ABI exists.
+    // Read the supplied sampled stride; never reinterpret it as native RGB.
+    b.sampled_native.resize(std::size_t(b.width)*b.height*3);
+    for(int y=0;y<b.height;++y) for(int x=0;x<b.width;++x) {
+        const auto sy=std::uint64_t(y)*sampled_h/b.height;
+        const auto sx=std::uint64_t(x)*sampled_w/b.width;
+        std::copy_n(rgb+(sy*sampled_w+sx)*3,3,
+                    b.sampled_native.data()+(std::size_t(y)*b.width+x)*3);
+    }
+    present(b.sampled_native.data());
 }
 void HostWindow::push_audio_samples(const int16_t* x,std::size_t n){push_audio_block(x,n,65536);}
 void HostWindow::push_audio_block(const int16_t* x,std::size_t n,uint32_t rate) {
