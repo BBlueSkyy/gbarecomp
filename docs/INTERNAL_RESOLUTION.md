@@ -5,7 +5,8 @@ Games can authorize finer affine-background sampling with
 Super Circuit's mode-1 BG2, including the pre-HUD course fly-in. This is a local presentation enhancement, disabled
 at 1x by default. It does not add detail to original sprites or HUD artwork.
 
-Use the game's optional mod or `--internal-resolution 2|3|4`. A capable game
+Use the game's optional mod or `--internal-resolution 2|3|4|8|16`. The engine
+accepts integer scales from 1 through 16. A capable game
 also exposes resolution scale in its in-game display settings. The CLI overrides
 the initial mod selection. `[video] internal_resolution = 1` sets the ordinary
 configuration default. Unsupported games reject an enhancement request.
@@ -37,7 +38,17 @@ texture; the native sharp-prescale stage is unnecessary for enhanced textures.
 The browser host keeps its existing logical-size shared-memory slots and
 samples the supplied raster back onto that native grid. Its overload accepts
 the sampled stride correctly; enhanced-density browser display awaits a
-separate shared-memory protocol extension. Desktop SDL presents the full raster.
+separate shared-memory protocol extension. Desktop SDL presents the full raster
+when supported by its renderer. If a requested surface exceeds the GPU's
+texture limit or allocation fails, the host reduces only the upload until it
+fits, logs the effective size, and remembers it for subsequent frames. The
+CPU raster, logical geometry and canonical state are unchanged.
+
+Rendering work and surface memory grow with the square of the scale. Relative
+to 4x, 8x has four times the pixels and 16x has sixteen times the pixels.
+Performance depends on hardware, view width and scene; neither guarantees
+full speed. At native aspect, 16x renders 3840x2560; a 284x160 widescreen view
+renders 4544x2560. Sprite and HUD artwork remains native in all cases.
 
 Netplay uses the existing read-only presentation observer and private mirror.
 Each canonical PPU remains native. Local scale and window geometry do not enter

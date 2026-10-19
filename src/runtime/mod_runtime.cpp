@@ -1,4 +1,5 @@
 #include "mod_runtime.h"
+#include "gba_high_resolution.h"
 #include "mod_function_hooks.h"
 #include "asset_picker.h"
 
@@ -2319,7 +2320,7 @@ gba_mod_runtime_launcher_provider_c(void) {
 }
 
 extern "C" int gba_mod_set_internal_resolution(int scale) {
-    if (scale < 0 || scale > 4) return 0;
+    if (scale < 0 || scale > int(gba::GbaHighResolutionFrame::kMaxScale)) return 0;
     gbarecomp::state().internal_resolution = scale;
     return 1;
 }

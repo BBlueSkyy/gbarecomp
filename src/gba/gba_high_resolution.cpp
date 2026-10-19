@@ -15,8 +15,8 @@ int64_t ref28(const uint8_t* p) {
 int64_t delta28(int64_t n) { return int32_t(uint32_t(n) << 4) >> 4; }
 }
 GbaHighResolutionFrame::GbaHighResolutionFrame(unsigned scale) : scale_(scale) {
-    if (scale < 2 || scale > 4)
-        throw std::invalid_argument("internal resolution must be from 1 through 4");
+    if (scale < 2 || scale > kMaxScale)
+        throw std::invalid_argument("internal resolution must be from 1 through 16");
 }
 void GbaHighResolutionFrame::configure(unsigned width, unsigned height) {
     if (width == width_ && height == height_) return;
@@ -153,7 +153,7 @@ void GbaHighResolutionFrame::resolve() {
     for (unsigned sy = 0; sy < scale_; ++sy) {
         struct Row {
             int64_t u = 0, v = 0, pa = 0, pc = 0;
-            std::array<int64_t, 4> du{}, dv{};
+            std::array<int64_t, kMaxScale> du{}, dv{};
         };
         std::array<Row, 2> rows{};
         for (unsigned i = 0; i < 2; ++i) {

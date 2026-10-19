@@ -15,6 +15,7 @@ using HighResolutionAffineProvider = bool (*)(int bg, int screen_y);
 // here. The caller must not serialize this object or use its output for reads.
 class GbaHighResolutionFrame {
 public:
+    static constexpr unsigned kMaxScale = 16;
     explicit GbaHighResolutionFrame(unsigned scale);
     unsigned scale() const { return scale_; }
     void configure(unsigned width, unsigned height);

@@ -57,7 +57,7 @@ int gba_mod_adaptive_view_enabled(void);
 // overrides the selection for automated runs and explicit player requests.
 int gba_mod_set_diagnostic_replay_enabled(int enabled);
 int gba_mod_diagnostic_replay_enabled(void);
-// Optional presentation density, 1..4; 0 clears the request. Reset on each
+// Optional presentation density, 1..16; 0 clears the request. Reset on each
 // activation pass. This selects pixels, never HLE/LLE simulation backends.
 int gba_mod_set_internal_resolution(int scale);
 int gba_mod_internal_resolution(void);

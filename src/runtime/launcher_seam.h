@@ -608,9 +608,10 @@ inline void seam_append_setting_args(std::vector<std::string>& args,
         int idx = c.aspect_index;
         if (idx < 0 || idx >= opts.launcher_num_aspects) idx = 0;
         const std::uint16_t w = opts.launcher_aspect_view_widths[idx];
-        if (w > 240) {
+        if (w >= 240) {
             args.push_back("--view-width");
             args.push_back(std::to_string(w));
+            if (!adaptive_view) args.push_back("--no-resize-view");
         }
     } else if (fixed_view_honored && c.widescreen && !adaptive_view &&
                opts.resize_driven_view &&

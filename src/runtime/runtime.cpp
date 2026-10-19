@@ -226,6 +226,7 @@ struct Args {
     // Opt-in policy where the window drawable aspect selects view_width live.
     // Authorization remains game-owned through RunOptions::resize_driven_view.
     bool resize_view = false;
+    bool view_mode_set = false;
     // Desktop mouse -> touch emulation (--touch-emulation or
     // GBARECOMP_TOUCH_EMULATION=1) for developing and validating touch input.
     bool touch_emulation = false;
@@ -314,7 +315,7 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
         c->view_mode = value;
         c->view_mode_dirty = true;
     } else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_RESOLUTION_SCALE) == 0 && c->internal_resolution)
-        *c->internal_resolution = std::clamp(value, 1, 4);
+        *c->internal_resolution = std::clamp(value, 1, int(gba::GbaHighResolutionFrame::kMaxScale));
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_LINEAR_FILTER) == 0)
         c->window->set_linear_filter(value != 0);
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_AUDIO) == 0)
@@ -778,8 +779,8 @@ bool apply_toml_file(const std::filesystem::path& path, Args* args,
             args->sharp_filter = (val == "true" || val == "1");
         } else if (section == "video" && key == "internal_resolution") {
             int scale = 0;
-            if (!parse_int(val.c_str(), &scale) || scale < 1 || scale > 4) {
-                if (err) *err = "video.internal_resolution must be from 1 through 4";
+            if (!parse_int(val.c_str(), &scale) || scale < 1 || scale > int(gba::GbaHighResolutionFrame::kMaxScale)) {
+                if (err) *err = "video.internal_resolution must be from 1 through 16";
                 return false;
             }
             args->internal_resolution = scale;
@@ -1007,6 +1008,12 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
         }
         if (s == "--resize-view") {
             args->resize_view = true;
+            args->view_mode_set = true;
+            continue;
+        }
+        if (s == "--no-resize-view") {
+            args->resize_view = false;
+            args->view_mode_set = true;
             continue;
         }
         if (s == "--touch-emulation") {
@@ -1112,8 +1119,8 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
             const char* value = need_value("--internal-resolution");
             if (!value) return false;
             if (!parse_int(value, &args->internal_resolution) ||
-                args->internal_resolution < 1 || args->internal_resolution > 4) {
-                if (err) *err = "--internal-resolution must be from 1 through 4";
+                args->internal_resolution < 1 || args->internal_resolution > int(gba::GbaHighResolutionFrame::kMaxScale)) {
+                if (err) *err = "--internal-resolution must be from 1 through 16";
                 return false;
             }
             args->internal_resolution_set = true;
@@ -1397,13 +1404,20 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                                          gyro_sensitivity_calibration));
     }
     const bool netplay = opts.netplay && opts.netplay->enabled;
+    // A title may expose Display view choices while retaining a legacy view
+    // mod. An explicit supported Display choice wins; an unselected/default
+    // choice retains the catalog's existing behavior. Hidden controls do not
+    // grant a way around another title's catalog ownership.
+    const bool mod_controls_view = opts.mod_owns_adaptive_view &&
+        !(args.view_mode_set && (args.resize_view
+            ? opts.launcher_expose_adaptive_view : opts.launcher_expose_widescreen));
     gba::g_ws_affine_filter_enabled = !netplay && args.affine_filter ? 1 : 0;
 
 #if defined(GBARECOMP_ENABLE_MODS)
     bool mods_ready = false;
     const bool mods_requested =
         opts.mod_game_id && *opts.mod_game_id;
-    if (opts.mod_owns_adaptive_view) {
+    if (mod_controls_view) {
         // Fail closed to native view if the catalog cannot be loaded. A stale
         // display setting must never bypass the mod feature's validation.
         args.resize_view = false;
@@ -1588,9 +1602,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         mod_runtime_activate_plugins();
         if (!args.internal_resolution_set && gba_mod_internal_resolution() > 0)
             args.internal_resolution = gba_mod_internal_resolution();
-        // Once a game moves adaptive view into its package catalog, that
-        // feature is authoritative over stale TOML/CLI launcher settings.
-        if (opts.mod_owns_adaptive_view)
+        // Retain catalog defaults unless the title exposes and the player
+        // explicitly selects a Display view mode.
+        if (mod_controls_view)
             args.resize_view = gba_mod_adaptive_view_enabled() != 0;
     }
 #endif
@@ -1789,7 +1803,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             }
         }
 #if defined(GBARECOMP_ENABLE_MODS)
-        if (opts.mod_owns_adaptive_view) {
+        if (mod_controls_view) {
             if (gba_mod_view_width() > 0)
                 requested_width = gba_mod_view_width();
             else if (!gba_mod_adaptive_view_enabled())
@@ -1814,6 +1828,12 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         }
         ppu.set_view_margins(geometry.extra_left, geometry.extra_right, 0, 0);
         args.view_width = static_cast<int>(ppu.render_width());
+#if defined(GBARECOMP_RUNTIME_UI)
+        runtime_ui_context.view_mode = resize_view_enabled
+            ? RECOMP_RUNTIME_UI_VIEW_ADAPTIVE
+            : args.view_width > 240 ? RECOMP_RUNTIME_UI_VIEW_FIXED_16_9
+                                    : RECOMP_RUNTIME_UI_VIEW_NATIVE;
+#endif
         g_ws_extra_left  = static_cast<unsigned>(ppu.view_extra_left());
         g_ws_extra_right = static_cast<unsigned>(ppu.view_extra_right());
         // Legacy single-margin consumers use the larger side for odd widths so
@@ -1829,7 +1849,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         if (ppu.view_expanded() && !args.quiet) {
             const char* view_hint = "set --view-width 240 for the faithful view";
 #if defined(GBARECOMP_ENABLE_MODS)
-            if (opts.mod_owns_adaptive_view)
+            if (mod_controls_view)
                 view_hint = "disable the game's view mod for the faithful view";
 #endif
             std::fprintf(stderr,
@@ -3135,7 +3155,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 #endif
         if (opts.high_resolution_affine_provider) {
             runtime_ui_config.features |= RECOMP_RUNTIME_UI_STANDARD_RESOLUTION_SCALE;
-            runtime_ui_config.resolution_scale_max = 4;
+            runtime_ui_config.resolution_scale_max = gba::GbaHighResolutionFrame::kMaxScale;
         }
         runtime_ui_config.features |=
             RECOMP_RUNTIME_UI_STANDARD_LINEAR_FILTER |

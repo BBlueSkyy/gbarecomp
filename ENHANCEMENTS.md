@@ -124,7 +124,7 @@ coordinate invariant and leave both hooks unset unless expanded view is active.
 
 ## 4. Higher internal resolution
 
-An optional 2x/3x/4x affine presentation surface samples approved backgrounds
+An optional 2x/3x/4x/8x/16x affine presentation surface samples approved backgrounds
 more densely while preserving native sprite/HUD artwork and canonical state.
 Mario Kart: Super Circuit authorizes race BG2 and provides a disabled-by-default
 mod. It supports adaptive view and a separate netplay presentation mirror.

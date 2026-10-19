@@ -344,6 +344,8 @@ struct Backend {
     SDL_Window*   window   = nullptr;
     SDL_Renderer* renderer = nullptr;
     SDL_Texture*  texture  = nullptr;
+    unsigned      presentation_source_w = 0, presentation_source_h = 0;
+    std::vector<uint8_t> presentation_upload;
     SDL_Texture*  sharp_texture = nullptr;
     int           sharp_texture_w = 0;
     int           sharp_texture_h = 0;
@@ -2148,9 +2150,20 @@ bool HostWindow::set_surface_size(int base_w, int base_h) {
     SDL_DestroyTexture(b->texture);
     destroy_sharp_texture(b);
     b->texture = replacement;
+    b->presentation_source_w = b->presentation_source_h = 0;
     b->base_w = base_w;
     b->base_h = base_h;
     b->expanded_view = base_w != 240 || base_h != 160;
+#if !defined(__ANDROID__)
+    // A live Display choice can cross between SDL's native logical viewport
+    // and the explicit wide destination. Reset both coordinate systems, or
+    // Native -> 16:9 draws drawable coordinates through the old 240x160 scale.
+    const bool explicit_view = b->expanded_view || b->resize_driven_view;
+    SDL_RenderSetLogicalSize(b->renderer, explicit_view ? 0 : base_w, explicit_view ? 0 : base_h);
+    if (explicit_view) SDL_RenderSetViewport(b->renderer, nullptr);
+    SDL_SetWindowResizable(b->window,
+        explicit_view || b->freely_resizable_window ? SDL_TRUE : SDL_FALSE);
+#endif
     if (b->color_lut && !b->color_lut->is_passthrough())
         b->graded_fb.resize(static_cast<std::size_t>(base_w) * base_h * 3u);
     return true;
@@ -2195,26 +2208,59 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
     if (!sampled_h) sampled_h = unsigned(b->base_h);
     int texture_w = 0, texture_h = 0;
     SDL_QueryTexture(b->texture, nullptr, nullptr, &texture_w, &texture_h);
-    if (texture_w != int(sampled_w) || texture_h != int(sampled_h)) {
-        SDL_Texture* replacement = SDL_CreateTexture(b->renderer,
-            SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, int(sampled_w), int(sampled_h));
-        if (!replacement) throw std::runtime_error("cannot allocate presentation texture");
+    if (b->presentation_source_w != sampled_w || b->presentation_source_h != sampled_h) {
+        unsigned upload_w = sampled_w, upload_h = sampled_h;
+        SDL_RendererInfo info{};
+        SDL_GetRendererInfo(b->renderer, &info);
+        const auto shrink = [&] {
+            upload_w = std::max(1u, upload_w / 2);
+            upload_h = std::max(1u, upload_h / 2);
+        };
+        while ((info.max_texture_width > 0 && upload_w > unsigned(info.max_texture_width)) ||
+               (info.max_texture_height > 0 && upload_h > unsigned(info.max_texture_height))) shrink();
+        SDL_Texture* replacement = nullptr;
+        while (upload_w != unsigned(texture_w) || upload_h != unsigned(texture_h)) {
+            replacement = SDL_CreateTexture(b->renderer, SDL_PIXELFORMAT_RGB24,
+                SDL_TEXTUREACCESS_STREAMING, int(upload_w), int(upload_h));
+            if (replacement) break;
+            if (upload_w == 1 && upload_h == 1)
+                throw std::runtime_error("cannot allocate presentation texture");
+            shrink();
+        }
+        if (replacement) {
 #if SDL_VERSION_ATLEAST(2, 0, 12)
-        SDL_SetTextureScaleMode(replacement, b->linear_filter ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+            SDL_SetTextureScaleMode(replacement, b->linear_filter ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
 #endif
-        SDL_DestroyTexture(b->texture); destroy_sharp_texture(b);
-        b->texture = replacement;
-        std::fprintf(stderr, "host_window: render surface logical=%dx%d internal=%ux%u\n",
-                     b->base_w, b->base_h, sampled_w, sampled_h);
+            SDL_DestroyTexture(b->texture); destroy_sharp_texture(b);
+            b->texture = replacement;
+        }
+        texture_w = int(upload_w); texture_h = int(upload_h);
+        b->presentation_source_w = sampled_w; b->presentation_source_h = sampled_h;
+        std::fprintf(stderr, "host_window: render surface logical=%dx%d internal=%ux%u upload=%dx%d\n",
+                     b->base_w, b->base_h, sampled_w, sampled_h, texture_w, texture_h);
+    }
+    // Large elective scales can exceed an older GPU's texture limit. Keep the
+    // complete CPU raster and reduce only the upload, preserving logical view
+    // and guest state. Remember the successful size instead of retrying a
+    // failed allocation every frame.
+    if (unsigned(texture_w) != sampled_w || unsigned(texture_h) != sampled_h) {
+        b->presentation_upload.resize(size_t(texture_w) * texture_h * 3);
+        for (int y = 0; y < texture_h; ++y) {
+            const size_t row = size_t(uint64_t(y) * sampled_h / texture_h) * sampled_w;
+            for (int x = 0; x < texture_w; ++x)
+                std::memcpy(b->presentation_upload.data() + (size_t(y) * texture_w + x) * 3,
+                    rgb888 + (row + uint64_t(x) * sampled_w / texture_w) * 3, 3);
+        }
+        rgb888 = b->presentation_upload.data();
     }
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
     if (b->color_lut && !b->color_lut->is_passthrough()) {
-        b->graded_fb.resize(size_t(sampled_w) * sampled_h * 3);
-        b->color_lut->map_rgb888(rgb888, b->graded_fb.data(), sampled_w, sampled_h);
+        b->graded_fb.resize(size_t(texture_w) * texture_h * 3);
+        b->color_lut->map_rgb888(rgb888, b->graded_fb.data(), texture_w, texture_h);
         rgb888 = b->graded_fb.data();
     }
-    SDL_UpdateTexture(b->texture, nullptr, rgb888, sampled_w * 3);
+    SDL_UpdateTexture(b->texture, nullptr, rgb888, texture_w * 3);
     SDL_SetRenderDrawColor(b->renderer, 7, 11, 20, 255);
     SDL_RenderClear(b->renderer);
 #if defined(__ANDROID__)
@@ -2514,6 +2560,11 @@ void HostWindow::set_resize_driven_view(bool enabled) {
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
     b->resize_driven_view = enabled;
+#if !defined(__ANDROID__)
+    const bool explicit_view = b->expanded_view || enabled;
+    SDL_RenderSetLogicalSize(b->renderer, explicit_view ? 0 : b->base_w, explicit_view ? 0 : b->base_h);
+    if (explicit_view) SDL_RenderSetViewport(b->renderer, nullptr);
+#endif
     SDL_SetWindowResizable(
         b->window,
         enabled || b->expanded_view || b->freely_resizable_window

@@ -103,7 +103,8 @@ int main(int argc,char** argv) {
                 Case{GbaNetplayView::Wide16x9,1}, Case{GbaNetplayView::Wide21x9,1},
                 Case{GbaNetplayView::Wide32x9,1}, Case{GbaNetplayView::Adaptive,1},
                 Case{GbaNetplayView::Native,4}, Case{GbaNetplayView::Wide16x9,2},
-                Case{GbaNetplayView::Adaptive,4}}) {
+                Case{GbaNetplayView::Adaptive,4}, Case{GbaNetplayView::Wide16x9,8},
+                Case{GbaNetplayView::Adaptive,16}}) {
             if (scale>1 && !game.view_policy.high_resolution_affine_provider) continue;
             const bool reference=mode==GbaNetplayView::Native && scale==1;
             if (!session.load_state(initial,&error)) throw std::runtime_error(error);

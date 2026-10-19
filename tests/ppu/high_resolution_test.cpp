@@ -64,11 +64,11 @@ void run(unsigned scale, bool wide, bool effects) {
     uint8_t expected[3];
     gba::color::to_rgb888(pal(1),expected);
     CHECK(std::memcmp(hd+(size_t(5*scale)*width*scale+(left+5)*scale+1)*3,expected,3)==0);
-    if (!effects && scale==2) {
+    if (!effects && scale % 2 == 0) {
         // PA and adjacent row references move by two source texels. The odd
         // output samples reveal texels absent from a nearest-scaled native frame.
         gba::color::to_rgb888(pal(28),expected);
-        const auto* subpixel = hd+(size_t(13*scale+1)*width*scale+(left+13)*scale+1)*3;
+        const auto* subpixel = hd+(size_t(13*scale+scale/2)*width*scale+(left+13)*scale+scale/2)*3;
         CHECK(std::memcmp(subpixel,expected,3)==0);
         CHECK(std::memcmp(subpixel,canonical+(size_t(13)*width+left+13)*3,3)!=0);
     }
@@ -81,6 +81,6 @@ void run(unsigned scale, bool wide, bool effects) {
 }
 }
 int main() {
-    for (unsigned scale : {2u,3u,4u}) { run(scale,false,false); run(scale,true,true); }
+    for (unsigned scale : {2u,3u,4u,8u,16u}) { run(scale,false,false); run(scale,true,true); }
     std::puts("high resolution: real fractional samples, HUD/blend parity, native state isolation, reset/partial-raster/resize passed");
 }

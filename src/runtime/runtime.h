@@ -309,8 +309,9 @@ struct RunOptions {
     std::uint16_t widescreen_view_width = 0;
     // Game-supplied aspect vocabulary for the launcher's aspect cycle
     // (EXPERIMENTAL-tagged). labels/view_widths are parallel arrays of
-    // num_aspects entries; index 0 must be the native 240 view. The
-    // committed index maps to --view-width <view_widths[index]>.
+    // num_aspects entries. A width of 0 retains the game's mod/default view;
+    // otherwise the committed index maps to an explicit fixed --view-width.
+    // Native entries use 240; Adaptive remains a separate offered mode.
     // e.g. Mega Man Zero: {"3:2 (Native)","9:5 (288 px)","12:5 (384 px)",
     // "6:2 (480 px)"} / {240, 288, 384, 480}.
     const char* const*   launcher_aspect_labels = nullptr;
