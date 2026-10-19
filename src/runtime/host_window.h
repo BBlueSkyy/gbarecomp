@@ -139,6 +139,10 @@ public:
     // Upload one base_w x base_h RGB888 frame (the dimensions passed to open())
     // and present.
     void present(const uint8_t* rgb888);
+    // Sampled texture dimensions are independent of logical view/touch units.
+    // The enhanced texture is uploaded and presented directly, without a
+    // native-resolution intermediate render target.
+    void present(const uint8_t* rgb888, unsigned width, unsigned height);
 
     // Push `count` int16_t mono samples (32.768 kHz) into the audio
     // output queue. Backend converts to the host device's format.

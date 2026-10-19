@@ -51,6 +51,11 @@ int gba_mod_register_reset_callback(GBAModActivationCallback callback);
 int gba_mod_set_adaptive_view_enabled(int enabled);
 int gba_mod_adaptive_view_enabled(void);
 
+// Optional presentation density, 1..4; 0 clears the request. Reset on each
+// activation pass. This selects pixels, never HLE/LLE simulation backends.
+int gba_mod_set_internal_resolution(int scale);
+int gba_mod_internal_resolution(void);
+
 // Optional initial/fixed logical width; 0 means no plugin request. The runner
 // still clamps this to the game's capability. Reset on every activation pass.
 int gba_mod_set_view_width(int width);

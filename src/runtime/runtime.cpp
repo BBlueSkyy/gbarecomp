@@ -161,9 +161,11 @@ struct Args {
     bool window_set = false;
     bool quiet = false;
     bool window = false;
+    bool uncapped = false;  // benchmark pacing only; retain normal render/audio work
     std::string dump_bmp;
     std::string dump_png;    // --dump-png: final framebuffer as PNG (preferred)
     std::string load_state;  // --load-state <path>: headless savestate load
+    std::string dump_state;  // Explicit final canonical snapshot for diagnostics.
     // [video] screen = raw|unlit|frontlit|backlit|classic — present-time
     // color simulation (see color_lut). Empty = raw (passthrough). The
     // GBARECOMP_SCREEN env var overrides this at launch; --screen overrides
@@ -178,6 +180,8 @@ struct Args {
     int  volume = 100;            // --volume 0..100: pushed-sample gain
     bool linear_filter = false;   // --linear-filter 1: linear texture scaling
     bool sharp_filter = false;    // --sharp-filter 1: integer prescale + linear finish
+    int internal_resolution = 1;
+    bool internal_resolution_set = false;
     bool affine_filter = false;   // --affine-filter 1: game-authorized smoothing
     float gyro_sensitivity = 0.25f; // --gyro-sensitivity 0.25..4.00
     // [audio] shadow = true|false — arm the MP2K verified-enhancement shadow
@@ -241,6 +245,7 @@ struct RuntimeUiContext {
     HostWindow* window = nullptr;
     RecompRuntimeUi* ui = nullptr;
     float* gyro_sensitivity = nullptr;
+    int* internal_resolution = nullptr;
     int view_mode = RECOMP_RUNTIME_UI_VIEW_NATIVE;
     bool view_mode_dirty = false;
     // Menu-driven state slots, drained by the main loop alongside the
@@ -264,6 +269,8 @@ int runtime_ui_get(void* opaque, const RecompRuntimeUiItem* item, int* out) {
     if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_FULLSCREEN) == 0) *out = c->window->fullscreen();
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_WINDOW_SCALE) == 0) *out = c->window->window_scale();
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VIEW_MODE) == 0) *out = c->view_mode;
+    else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_RESOLUTION_SCALE) == 0 && c->internal_resolution)
+        *out = *c->internal_resolution;
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_LINEAR_FILTER) == 0) *out = c->window->linear_filter();
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_AUDIO) == 0) *out = c->window->audio_enabled();
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VOLUME) == 0) *out = c->window->volume();
@@ -295,7 +302,9 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VIEW_MODE) == 0) {
         c->view_mode = value;
         c->view_mode_dirty = true;
-    } else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_LINEAR_FILTER) == 0)
+    } else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_RESOLUTION_SCALE) == 0 && c->internal_resolution)
+        *c->internal_resolution = std::clamp(value, 1, 4);
+    else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_LINEAR_FILTER) == 0)
         c->window->set_linear_filter(value != 0);
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_AUDIO) == 0)
         c->window->set_audio_enabled(value != 0);
@@ -756,6 +765,13 @@ bool apply_toml_file(const std::filesystem::path& path, Args* args,
             args->resize_view = (val == "true" || val == "1");
         } else if (section == "video" && key == "sharp_filter") {
             args->sharp_filter = (val == "true" || val == "1");
+        } else if (section == "video" && key == "internal_resolution") {
+            int scale = 0;
+            if (!parse_int(val.c_str(), &scale) || scale < 1 || scale > 4) {
+                if (err) *err = "video.internal_resolution must be from 1 through 4";
+                return false;
+            }
+            args->internal_resolution = scale;
         } else if (section == "video" && key == "affine_filter") {
             args->affine_filter = (val == "true" || val == "1");
         } else if (section == "video" && key == "widescreen") {
@@ -787,9 +803,9 @@ constexpr std::string_view kCliValueFlags[] = {
     "--config",      "--bios",          "--rom",           "--bios-sha1",
     "--rom-sha1",    "--rom-crc32",     "--steps",         "--frames",
     "--scale",       "--tcp",           "--tcp-observe",   "--dump-bmp",
-    "--dump-png",    "--load-state",    "--view-width",    "--widescreen",
+    "--dump-png",    "--load-state",    "--dump-state",    "--view-width",    "--widescreen",
     "--save",        "--save-path",     "--gyro-sensitivity",
-    "--sharp-filter", "--linear-filter", "--affine-filter", "--screen",
+    "--sharp-filter", "--linear-filter", "--affine-filter", "--internal-resolution", "--screen",
     "--volume",
 };
 
@@ -957,6 +973,12 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
             args->dump_png = v;
             continue;
         }
+        if (s == "--dump-state") {
+            const char* value = need_value("--dump-state");
+            if (!value) return false;
+            args->dump_state = value;
+            continue;
+        }
         if (s == "--load-state") {
             const char* v = need_value("--load-state");
             if (!v) return false;
@@ -1063,6 +1085,17 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
             args->sharp_filter = sf != 0;
             continue;
         }
+        if (s == "--internal-resolution") {
+            const char* value = need_value("--internal-resolution");
+            if (!value) return false;
+            if (!parse_int(value, &args->internal_resolution) ||
+                args->internal_resolution < 1 || args->internal_resolution > 4) {
+                if (err) *err = "--internal-resolution must be from 1 through 4";
+                return false;
+            }
+            args->internal_resolution_set = true;
+            continue;
+        }
         if (s == "--affine-filter") {
             const char* v = need_value("--affine-filter");
             if (!v) return false;
@@ -1108,6 +1141,10 @@ bool parse_cli(int argc, char** argv, Args* args, std::string* err) {
         }
         if (s == "--no-bios-skip-intro") {
             args->bios_skip_intro = 0;
+            continue;
+        }
+        if (s == "--uncapped") {
+            args->uncapped = true;
             continue;
         }
         if (s == "--window") {
@@ -1487,6 +1524,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             boot.volume=args.volume; boot.linear_filter=args.linear_filter;
             boot.sharp_filter=args.sharp_filter; boot.show_fps=opts.show_fps_by_default;
             boot.affine_filter=args.affine_filter;
+            boot.internal_resolution=args.internal_resolution;
             if (args.frames_set) {
                 if (args.frames<=0) throw std::invalid_argument("invalid netplay frame limit");
                 boot.finish_tick=static_cast<std::uint32_t>(args.frames);
@@ -1524,6 +1562,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             return 1;
         }
         mod_runtime_activate_plugins();
+        if (!args.internal_resolution_set && gba_mod_internal_resolution() > 0)
+            args.internal_resolution = gba_mod_internal_resolution();
         // Once a game moves adaptive view into its package catalog, that
         // feature is authoritative over stale TOML/CLI launcher settings.
         if (opts.mod_owns_adaptive_view)
@@ -1533,6 +1573,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 
     gba::GbaBus bus;
     gba::GbaPpu ppu;
+    if (args.internal_resolution > 1 && !opts.high_resolution_affine_provider) {
+        std::fprintf(stderr, "This game has not enabled higher internal resolution.\n");
+        return 1;
+    }
+    ppu.set_internal_resolution(args.internal_resolution, opts.high_resolution_affine_provider);
     bus.set_bios(&bios);
     bus.request_audio_shadow(args.audio_shadow);  // [audio].shadow default; env can override
 
@@ -1596,6 +1641,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                      "generated native backend\n");
         return 1;
     }
+#if defined(GBARECOMP_SCANLINE_HLE)
+    std::printf("scanline_backend=HLE (tile-span native-color composition)\n");
+#else
+    std::printf("scanline_backend=LLE (per-pixel composition)\n");
+#endif
     if (!args.quiet) {
         std::printf("force_interp=%s\n",
                     g_force_interp ? "ENABLED" : "DISABLED");
@@ -1641,6 +1691,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 #if defined(GBARECOMP_RUNTIME_UI)
     RuntimeUiContext runtime_ui_context;
     runtime_ui_context.opts = &opts;
+    if (opts.high_resolution_affine_provider)
+        runtime_ui_context.internal_resolution = &args.internal_resolution;
     runtime_ui_context.view_mode = resize_view_enabled
         ? RECOMP_RUNTIME_UI_VIEW_ADAPTIVE
         : args.view_width > 240 ? RECOMP_RUNTIME_UI_VIEW_FIXED_16_9
@@ -2691,6 +2743,15 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         }
     };
     FramePhaseRing frame_phase;
+    uint64_t high_resolution_presented = 0;
+    auto present_live_frame = [&]() {
+        ppu.set_internal_resolution(args.internal_resolution, opts.high_resolution_affine_provider);
+        if (const auto* pixels = ppu.high_resolution_framebuffer()) {
+            const auto* hd = ppu.high_resolution();
+            win.present(pixels, hd->width(), hd->height());
+            ++high_resolution_presented;
+        } else win.present(live_fb.data());
+    };
     auto apply_runtime_view_geometry = [&](const ViewGeometry& geometry) -> bool {
         if (geometry.width == ppu.render_width() && geometry.height == ppu.render_height()) return false;
         if (!win.set_surface_size(static_cast<int>(geometry.width),
@@ -2956,7 +3017,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         runtime_ui_config.menu.callbacks.get_text = runtime_ui_get_text;
         runtime_ui_config.menu.callbacks.set_text = runtime_ui_set_text;
 #endif
-        runtime_ui_config.features =
+        if (opts.high_resolution_affine_provider) {
+            runtime_ui_config.features |= RECOMP_RUNTIME_UI_STANDARD_RESOLUTION_SCALE;
+            runtime_ui_config.resolution_scale_max = 4;
+        }
+        runtime_ui_config.features |=
             RECOMP_RUNTIME_UI_STANDARD_LINEAR_FILTER |
             RECOMP_RUNTIME_UI_STANDARD_AUDIO |
             RECOMP_RUNTIME_UI_STANDARD_VOLUME |
@@ -3092,7 +3157,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 #endif
         sync_resize_driven_view();
         if (live_fb.empty()) live_fb.assign(ppu.render_bytes(), 0);
-        pacer.emplace();  // paces to the GBA's 59.7275 Hz
+        pacer.emplace();  // paces to the GBA's 59.7275 Hz by default
+        pacer->set_uncapped(args.uncapped); // no frame skipping/audio suppression
     }
 
     // Host-window save-state slots: the ROM path with a .stateN extension.
@@ -3671,7 +3737,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                     }
                 }
                 if (phase_active) fp_t1 = FramePhaseRing::now_ns();
-                if (present_frame) win.present(live_fb.data());
+                if (present_frame) present_live_frame();
                 if (phase_active) fp_t2 = FramePhaseRing::now_ns();
                 int16_t audio_buf[2048];
                 std::size_t n = bus.audio().drain_samples(audio_buf, 2048);
@@ -3980,12 +4046,13 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     if (input_replay_requested) apply_input_replay();
     if (args.window) pump_host_input();
 
+    const auto gameplay_begin = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < step_budget && !host_quit; ++i) {
         // Paused: hold the guest still, keep the window alive (input pump,
         // re-present, ~100 Hz idle). Applies to windowed play only.
         while (host_paused && !host_quit && args.window) {
             pump_host_input();
-            win.present(live_fb.data());
+            present_live_frame();
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         if (host_quit) break;
@@ -4070,7 +4137,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                     }
                 }
                 if (phase_active) fp_t1 = FramePhaseRing::now_ns();
-                if (present_frame) win.present(live_fb.data());
+                if (present_frame) present_live_frame();
                 // Framedump (capture runs only) is attributed to present_us.
                 if (framedump_dir && frame >= framedump_start &&
                     framedump_written < framedump_max) {
@@ -4140,6 +4207,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             break;
         }
     }
+    const double gameplay_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - gameplay_begin).count();
+    const uint64_t gameplay_end_frame = ppu.frame_count();
     // Drop the present-in-place hook before the captured runner locals (win,
     // pacer, live_fb, …) go out of scope at function return.
     runtime_set_frame_present_hook(nullptr);
@@ -4191,7 +4261,25 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 
     bool save_ok = flush_save();
     if (!suspend_on_exit) clear_suspend_marker();
+    if (args.frames >= 0) {
+        std::printf("bounded_run start_frame=%llu end_frame=%llu presented=%llu "
+                    "view_width=%u uncapped=%u seconds=%.6f guest_fps=%.3f present_fps=%.3f\n",
+                    static_cast<unsigned long long>(headless_base_frame),
+                    static_cast<unsigned long long>(gameplay_end_frame),
+                    static_cast<unsigned long long>(frames_presented),
+                    ppu.render_width(), args.uncapped ? 1u : 0u, gameplay_seconds,
+                    gameplay_seconds > 0 ? (gameplay_end_frame - headless_base_frame) / gameplay_seconds : 0,
+                    gameplay_seconds > 0 ? frames_presented / gameplay_seconds : 0);
+    }
     write_session_diagnostics(opts, "exit", ppu.frame_count());
+
+    if (!args.dump_state.empty()) {
+        std::string error;
+        if (!debug::save_state(args.dump_state.c_str(), make_snapshot_ctx(), &error)) {
+            std::fprintf(stderr, "Final diagnostic snapshot failed: %s\n", error.c_str());
+            return 1;
+        }
+    }
 
     if (!args.dump_bmp.empty() || !args.dump_png.empty()) {
         std::vector<uint8_t> fb(ppu.render_bytes(), 0);
@@ -4210,22 +4298,32 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             ppu.render(fb.data(), bus.io().read16(0x000), bus.io().raw(),
                        bus.vram_ptr(), bus.oam_ptr(), bus.pal_ptr());
         }
+        const uint8_t* dump_pixels = fb.data();
+        unsigned dump_width = ppu.render_width(), dump_height = ppu.render_height();
+        if (!fresh && ppu.high_resolution_framebuffer()) {
+            dump_pixels = ppu.high_resolution_framebuffer();
+            dump_width = ppu.high_resolution()->width(); dump_height = ppu.high_resolution()->height();
+        }
         if (!args.dump_bmp.empty() &&
-            !write_bmp(args.dump_bmp, fb.data(), ppu.render_width(),
-                       ppu.render_height())) {
+            !write_bmp(args.dump_bmp, dump_pixels, dump_width, dump_height)) {
             std::fprintf(stderr,
                          "[gbarecomp:runtime] failed to write %s\n",
                          args.dump_bmp.c_str());
         }
         if (!args.dump_png.empty() &&
-            !write_png(args.dump_png, fb.data(), ppu.render_width(),
-                       ppu.render_height())) {
+            !write_png(args.dump_png, dump_pixels, dump_width, dump_height)) {
             std::fprintf(stderr,
                          "[gbarecomp:runtime] failed to write %s\n",
                          args.dump_png.c_str());
         }
     }
 
+    if (const auto* hd = ppu.high_resolution())
+        std::printf("presentation scale=%u effective=%ux%u complete_frames=%llu affine_lines=%llu samples=%llu hd_presented=%llu\n",
+            hd->scale(), ppu.high_resolution_framebuffer() ? hd->width() : ppu.render_width(),
+            ppu.high_resolution_framebuffer() ? hd->height() : ppu.render_height(),
+            (unsigned long long)hd->frames(), (unsigned long long)hd->affine_lines(), (unsigned long long)hd->samples(),
+            (unsigned long long)high_resolution_presented);
     std::printf("\nfinal_pc=0x%08x unmapped=%zu io_unhandled=%zu "
                 "steps=%llu cycles=%llu ppu_vcount=%u ppu_frames=%llu "
                 "frames_presented=%d\n",

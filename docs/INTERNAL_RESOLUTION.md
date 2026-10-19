@@ -1,0 +1,83 @@
+# Higher internal resolution
+
+Games can authorize finer affine-background sampling with
+`RunOptions::high_resolution_affine_provider`. The first pilot is Mario Kart:
+Super Circuit's race BG2. This is a local presentation enhancement, disabled
+at 1x by default. It does not add detail to original sprites or HUD artwork.
+
+Use the game's optional mod or `--internal-resolution 2|3|4`. A capable game
+also exposes resolution scale in its in-game display settings. The CLI overrides
+the initial mod selection. `[video] internal_resolution = 1` sets the ordinary
+configuration default. Unsupported games reject an enhancement request.
+
+## Raster and ownership
+
+`GbaHighResolutionFrame` consumes the effective affine references, current
+VRAM/palette and layer candidates at each real published raster row. It samples
+the approved BG at fractional positions and reinserts it into the priority,
+window, alpha and brightness stack. Other layers retain their original samples.
+Foreign presentation overlays use the original composed row instead.
+
+Within a row, vertical subpixel transforms extrapolate from the previous
+published transform. Mode/layout changes, reset, restore and new frames break
+that history. This is a presentation approximation; it neither reruns HBlank
+DMA nor guesses future VRAM. At original pixel positions the unfiltered samples
+remain exact. The existing optional affine filter applies to enhanced samples.
+
+The enhanced buffers, interpolation history and counters are excluded from
+canonical serialization. Native rendering, guest reads, timers, interrupts and
+CPU execution retain their existing path. A full raster must complete before
+the enhanced buffer becomes available; partial restored/resized frames use the
+ordinary output until a complete frame is ready.
+
+SDL's sampled texture dimensions are separate from logical screen dimensions.
+A 382x160 adaptive view at 4x uploads 1528x640 directly. Aspect/layout/touch
+coordinates remain in logical units. Color grading operates on the sampled
+texture; the native sharp-prescale stage is unnecessary for enhanced textures.
+
+Netplay uses the existing read-only presentation observer and private mirror.
+Each canonical PPU remains native. Local scale and window geometry do not enter
+session snapshots or hashes. Rollback invalidates presentation history. This
+does not authorize incompatible simulation builds to connect.
+
+## Build selection and optimization
+
+`GBARECOMP_SCANLINE_IMPLEMENTATION=HLE` selects the tile-span/native-color
+compositor by default. `LLE` retains the original compositor in maintained
+source. This is an exact optimization despite its historical HLE name, and is
+independent of internal resolution. The choice enters strict netplay source
+identity. No player-facing HLE/LLE switch or dual execution is required.
+
+Enhanced row setup hoists signed coordinate divisions and subpixel offsets out
+of the pixel loop. Each quotient retains C++ signed truncation in the original
+order. Per-pixel coordinates advance by addition. This uses portable C++, with
+no CPU-specific dependency or floating-point result.
+
+The MKSC pilot rejected a per-row decoded tile cache: it added work without a
+measured gain. No cache lifetime/invalidation contract was added to shipping
+source. A GPU affine renderer remains a possible next step if measured host
+headroom is inadequate; it is not needed to enable this implementation.
+
+## Validation
+
+Build `high_resolution_tests`, `bus_tests` and `multiplayer_view_tests` under
+both compositor selections. The focused raster fixture checks 2x/3x/4x samples,
+extra texels absent at native density, original sample parity, HUD/alpha,
+negative margins, per-row VRAM/palette changes, canonical device-state equality
+and reset/partial-raster/resize behavior. The mirror fixture checks independent
+local dimensions and canonical state equality through restore.
+
+Opted-in titles can build `<title>ViewProbe` and supply ROM, BIOS, raw paired
+session state and an output prefix. It compares every canonical session byte
+for native/wide/adaptive views and supported enhanced scales, including a
+twelve-frame replay after restore. This is a local deterministic differential,
+not a transport test or cross-build/platform qualification.
+
+Bounded runtime diagnostics distinguish `complete_frames`/`affine_lines`/
+`samples` from `hd_presented`. Headless raster execution does not establish
+actual window presentation. `--uncapped` removes pacing while retaining normal
+render/audio work. `--dump-state` writes an explicit final diagnostic snapshot;
+`--dump-png` captures the completed enhanced raster. Keep automated audio muted.
+
+See the title's `docs/INTERNAL_RESOLUTION.md` for the measured pilot, fixture
+identity, reproducible command and remaining limits.

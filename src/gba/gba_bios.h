@@ -1,10 +1,9 @@
 // gba_bios.h — GBA BIOS loader.
 //
-// Per PRINCIPLES.md "BIOS is sacred": this class loads the user's
-// dump of the real GBA BIOS, hash-verifies it, and exposes the bytes
-// for the bus to read. We never HLE SWIs, never stub BIOS code, and
-// never skip the BIOS intro. The interpreter executes BIOS bytes the
-// same way it executes cartridge bytes — that's the whole point.
+// Loads and hash-verifies the user's real BIOS dump and exposes its bytes to
+// the bus. The maintained LLE configuration executes these bytes for BIOS
+// services. Native replacements follow HLE.md; intro playback is a separate
+// boot-presentation choice. This loader does not select an implementation.
 //
 // The expected SHA-1 of the canonical GBA BIOS is hardcoded as a
 // default; callers can override it via `load_from_file(path, sha1,...)`

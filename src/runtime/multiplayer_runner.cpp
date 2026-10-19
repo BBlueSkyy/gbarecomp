@@ -97,8 +97,8 @@ int run(const GbaNetplayLaunch& launch,const GbaNetplayBoot& boot) {
     std::unique_ptr<GbaNetplayPresentation> presentation;
     const bool adaptive = launch.view == GbaNetplayView::Adaptive;
     const unsigned initial_width = gba_netplay_view_width(launch.view);
-    if (launch.view != GbaNetplayView::Native) {
-        presentation = std::make_unique<GbaNetplayPresentation>(launch.view_policy, boot.affine_filter);
+    if (launch.view != GbaNetplayView::Native || boot.internal_resolution > 1) {
+        presentation = std::make_unique<GbaNetplayPresentation>(launch.view_policy, boot.affine_filter, boot.internal_resolution);
         presentation->request_width(initial_width);
         simulation.input_machine(launch.local_seat).ppu.set_presentation_observer(presentation.get());
     }
@@ -183,11 +183,12 @@ int run(const GbaNetplayLaunch& launch,const GbaNetplayBoot& boot) {
             // Replayed/catch-up frames never pass take_output. A restore in
             // mid-raster uses the canonical image until a complete wide frame.
             const bool wide = presentation && presentation->pixels();
-            const unsigned width = wide ? presentation->width() : 240;
+            const unsigned width = wide ? presentation->logical_width() : 240;
             if (!window.set_surface_size(width,160))
                 throw std::runtime_error("cannot resize netplay presentation surface");
             window.set_view_margins((width-240)/2,(width-240)-(width-240)/2,0,0);
-            window.present(wide ? presentation->pixels() : output.rgb888.data());
+            if (wide) window.present(presentation->pixels(), presentation->width(), presentation->height());
+            else window.present(output.rgb888.data());
             window.push_audio_samples(output.audio.data(),output.audio.size());
         }
         if (step==GbaNetplayMatch::Step::Idle) pacer.idle();

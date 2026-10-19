@@ -182,6 +182,7 @@ struct Runtime {
     std::string error;
     bool initialized = false;
     bool adaptive_view_enabled = false;
+    int internal_resolution = 0;
     int view_width = 0;
 };
 
@@ -2054,6 +2055,7 @@ void mod_runtime_activate_plugins() {
     Runtime& runtime = state();
     if (!runtime.initialized) return;
     runtime.adaptive_view_enabled = false;
+    runtime.internal_resolution = 0;
     runtime.view_width = 0;
     // Presentation belongs to the currently committed plugin set. Clear the
     // old immutable buffer before reset callbacks so disabling/recommitting a
@@ -2302,4 +2304,13 @@ extern "C" const RecompLauncherCModProvider*
 gba_mod_runtime_launcher_provider_c(void) {
     return gbarecomp::state().initialized
         ? gbarecomp::mod_runtime_launcher_provider() : nullptr;
+}
+
+extern "C" int gba_mod_set_internal_resolution(int scale) {
+    if (scale < 0 || scale > 4) return 0;
+    gbarecomp::state().internal_resolution = scale;
+    return 1;
+}
+extern "C" int gba_mod_internal_resolution(void) {
+    return gbarecomp::state().internal_resolution;
 }

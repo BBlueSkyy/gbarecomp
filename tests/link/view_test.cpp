@@ -75,6 +75,33 @@ void restores() {
     CHECK(session.save_state()==snapshot);
     session.machine(1).ppu.set_presentation_observer(nullptr);
 }
+bool authorize_hd(int bg, int) { return bg==2; }
+void independent_resolution() {
+    auto bus=std::make_unique<gba::GbaBus>(); bus->rtc().set_emulated_clock(0);
+    auto native=std::make_unique<gba::GbaPpu>();
+    auto observed=std::make_unique<gba::GbaPpu>();
+    GbaNetplayViewPolicy policy{true,true}; policy.high_resolution_affine_provider=authorize_hd;
+    GbaNetplayPresentation mirror(policy,false,4);
+    observed->set_presentation_observer(&mirror);
+    std::array<std::uint8_t,0x400> io{};
+    auto w16=[&](unsigned a,unsigned n) { io[a]=n; io[a+1]=n>>8; };
+    w16(0x0c,0x2004); w16(0x20,0x200); w16(0x26,0x100);
+    for (unsigned i=0;i<64;++i) bus->vram_ptr()[0x4000+i]=i+1;
+    for (unsigned i=0;i<128;++i) bus->pal_ptr()[i]=i*17;
+    for (unsigned width:{240u,284u,382u,317u}) {
+        mirror.request_width(width);
+        for (unsigned y=0;y<160;++y) for (auto* p:{native.get(),observed.get()})
+            p->render_scanline(y,0x0401,io.data(),bus->vram_ptr(),bus->oam_ptr(),bus->pal_ptr());
+        native->mark_framebuffer_latched(); observed->mark_framebuffer_latched();
+        CHECK(mirror.pixels() && mirror.width()==width*4 && mirror.height()==640);
+        CHECK(mirror.logical_width()==width);
+        CHECK(gba::save_device_state(*bus,*native)==gba::save_device_state(*bus,*observed));
+    }
+    mirror.restored(); CHECK(!mirror.pixels());
+    observed->render_scanline(50,0x0401,io.data(),bus->vram_ptr(),bus->oam_ptr(),bus->pal_ptr());
+    observed->mark_framebuffer_latched(); CHECK(!mirror.pixels());
+    observed->set_presentation_observer(nullptr);
+}
 }
 int main() {
     GbaNetplayViewPolicy policy{true,false};
@@ -95,6 +122,6 @@ int main() {
     parse_gba_netplay_arguments(args,launch);
     CHECK(!launch.enabled && launch.view==GbaNetplayView::Adaptive && launch.view_explicit);
     CHECK((args==std::vector<std::string>{"game","--launcher"}));
-    raster(); restores();
+    raster(); restores(); independent_resolution();
     std::puts("netplay presentation: raster parity, canonical state, restore and capability gates passed");
 }

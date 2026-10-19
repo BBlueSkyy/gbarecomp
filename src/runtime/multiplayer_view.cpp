@@ -81,8 +81,12 @@ struct GbaNetplayPresentation::Impl {
         gba::g_ws_affine_filter_enabled = filter;
     }
 };
-GbaNetplayPresentation::GbaNetplayPresentation(GbaNetplayViewPolicy p, bool filter)
-    : impl_(std::make_unique<Impl>(p, filter)) {}
+GbaNetplayPresentation::GbaNetplayPresentation(GbaNetplayViewPolicy p, bool filter, unsigned scale)
+    : impl_(std::make_unique<Impl>(p, filter)) {
+    if (scale > 1 && !p.high_resolution_affine_provider)
+        throw std::invalid_argument("game does not support higher internal resolution");
+    impl_->mirror.set_internal_resolution(scale, p.high_resolution_affine_provider);
+}
 GbaNetplayPresentation::~GbaNetplayPresentation() {
     GlobalScope scope(impl_->globals);
     if (impl_->initialized && impl_->policy.reset) impl_->policy.reset();
@@ -94,14 +98,23 @@ void GbaNetplayPresentation::request_width(unsigned width) {
     impl_->requested = width; // applied at scanline zero, never mid-frame
 }
 const std::uint8_t* GbaNetplayPresentation::pixels() const {
-    return impl_->complete ? impl_->mirror.latched_framebuffer() : nullptr;
+    if (!impl_->complete) return nullptr;
+    const auto* hd = impl_->mirror.high_resolution_framebuffer();
+    return hd ? hd : impl_->mirror.latched_framebuffer();
 }
-unsigned GbaNetplayPresentation::width() const { return impl_->latched_width; }
+unsigned GbaNetplayPresentation::width() const {
+    return impl_->mirror.high_resolution_framebuffer() ? impl_->mirror.high_resolution()->width() : impl_->latched_width;
+}
+unsigned GbaNetplayPresentation::height() const {
+    return impl_->mirror.high_resolution_framebuffer() ? impl_->mirror.high_resolution()->height() : 160;
+}
+unsigned GbaNetplayPresentation::logical_width() const { return impl_->latched_width; }
 void GbaNetplayPresentation::restored() noexcept {
     ++impl_->epoch;
     impl_->reset_pending = true;
     impl_->complete = false;
     impl_->next_line = 0;
+    impl_->mirror.invalidate_high_resolution();
 }
 void GbaNetplayPresentation::scanline(const gba::GbaPpu& source, std::uint32_t y,
     std::uint16_t dispcnt, const std::uint8_t* io, const std::uint8_t* vram,

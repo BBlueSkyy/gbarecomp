@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <memory>
+#include "gba_high_resolution.h"
 
 namespace gbarecomp::debug { class SnapshotWriter; class SnapshotReader; }
 
@@ -29,6 +31,18 @@ namespace gba {
 
 class GbaPpu {
 public:
+    // Optional downstream sampling density. Source artwork stays native;
+    // approved affine backgrounds receive fractional samples. Never serialized.
+    void set_internal_resolution(unsigned scale, HighResolutionAffineProvider provider = nullptr);
+    unsigned internal_resolution() const { return high_resolution_ ? high_resolution_->scale() : 1; }
+    const GbaHighResolutionFrame* high_resolution() const { return high_resolution_.get(); }
+    const uint8_t* high_resolution_framebuffer() const {
+        return high_resolution_ ? high_resolution_->pixels() : nullptr;
+    }
+    void invalidate_high_resolution() {
+        if (high_resolution_) high_resolution_->invalidate();
+    }
+
     // Hardware constants.
     static constexpr uint32_t kDotsVisible      = 252;
     static constexpr uint32_t kDotsHBlank       = 56;
@@ -182,6 +196,8 @@ public:
 
 private:
     friend class SimulationStateCodec;
+    std::unique_ptr<GbaHighResolutionFrame> high_resolution_;
+    HighResolutionAffineProvider high_resolution_provider_ = nullptr;
     PresentationObserver* presentation_ = nullptr; // borrowed; not serialized
     uint32_t scanline_        = 0;   // 0..227
     uint32_t dot_in_scanline_ = 0;   // 0..307 (in dots, not cycles)

@@ -11,6 +11,9 @@ function(gbarecomp_target_netplay_identity target game_root generated_root)
     set(engine_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/..")
     cmake_path(NORMAL_PATH engine_root)
     set(identity "gba-source-identity/2\n")
+    # Implementation selection is fixed by the build. Keep different choices
+    # distinct until a shared simulation profile is separately qualified.
+    string(APPEND identity "scanline=${GBARECOMP_SCANLINE_IMPLEMENTATION}\n")
     foreach(group engine game generated network rollback)
         if(group STREQUAL "engine")
             set(root "${engine_root}/src")

@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 project(gbarecomp C CXX)
 
+set(GBARECOMP_SCANLINE_IMPLEMENTATION "HLE" CACHE STRING
+    "Shared compositor implementation: HLE or maintained LLE reference")
+set_property(CACHE GBARECOMP_SCANLINE_IMPLEMENTATION PROPERTY STRINGS HLE LLE)
+if(NOT GBARECOMP_SCANLINE_IMPLEMENTATION MATCHES "^(HLE|LLE)$")
+    message(FATAL_ERROR "GBARECOMP_SCANLINE_IMPLEMENTATION must be HLE or LLE")
+endif()
+if(GBARECOMP_SCANLINE_IMPLEMENTATION STREQUAL "HLE")
+    set_property(SOURCE src/gba/gba_ppu.cpp src/runtime/runtime.cpp APPEND
+        PROPERTY COMPILE_DEFINITIONS GBARECOMP_SCANLINE_HLE=1)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -263,6 +274,7 @@ add_library(gbarecomp_gba STATIC
     src/gba/gba_dma.cpp
     src/gba/gba_timers.cpp
     src/gba/gba_ppu.cpp
+    src/gba/gba_high_resolution.cpp
     src/gba/gba_audio.cpp
     src/gba/mod_audio.cpp
     src/gba/gba_m4a.cpp
@@ -843,6 +855,7 @@ target_link_libraries(thumb_tests PRIVATE gbarecomp_armv4t)
 add_test(NAME thumb_tests COMMAND thumb_tests)
 
 add_gbarecomp_runtime_stack_test(bus_tests tests/bus/test_main.cpp)
+add_gbarecomp_runtime_stack_test(high_resolution_tests tests/ppu/high_resolution_test.cpp)
 add_gbarecomp_runtime_stack_test(dma_tests tests/dma/test_main.cpp)
 add_gbarecomp_runtime_stack_test(timer_tests tests/timers/test_main.cpp)
 
