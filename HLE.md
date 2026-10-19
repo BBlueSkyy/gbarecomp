@@ -32,6 +32,13 @@ into canonical snapshots. Reset/restore/resize invalidates incomplete enhanced
 frames. Unsupported scenes retain their ordinary rendered content.
 See [the implementation and validation guide](docs/INTERNAL_RESOLUTION.md).
 
+`GBARECOMP_HD_SAMPLER_IMPLEMENTATION=HLE|LLE` selects the enhanced affine
+sampler. The qualified cached HLE sampler is the default; the direct tiled LLE
+sampler remains buildable. This backend preference applies to consuming titles
+without enabling enhanced resolution automatically. The owner approved the
+measured MKSC Windows gain; other titles and platforms do not inherit that
+specific performance qualification merely by selecting the same backend.
+
 For netplay, follow [NETPLAY.md](../../recomp-template/NETPLAY.md). Qualified
 peers agree on simulation semantics and actual capabilities before frame 0;
 host clocks, thread completion and GPU readiness must never decide guest

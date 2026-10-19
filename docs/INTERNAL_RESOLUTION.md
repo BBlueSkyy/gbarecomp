@@ -69,7 +69,10 @@ order. Per-pixel coordinates advance by addition. This uses portable C++, with
 no CPU-specific dependency or floating-point result.
 
 `GBARECOMP_HD_SAMPLER_IMPLEMENTATION=HLE` selects the persistent indexed-surface
-sampler. `LLE` builds the maintained direct tile/map/palette sampler. Startup
+sampler by default for titles consuming this engine revision. `LLE` builds the
+maintained direct tile/map/palette sampler. Existing CMake caches retain their
+explicit selection. Backend selection does not change a title's optional
+enhancement or initial resolution settings. Startup
 reports `hd_sampler_backend`; the choice also enters strict source identity.
 There is no runtime HLE/LLE control or state handoff. This choice is independent
 of the native compositor selection above.
