@@ -19,9 +19,11 @@
 #include "function_finder.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 
 #include "arm_decode.h"
 #include "thumb_decode.h"
@@ -466,7 +468,7 @@ bool FunctionFinder::is_thumb_ram_leaf(uint32_t addr, uint32_t* ram_global) cons
     // entry shape than merely decoding arbitrary Thumb bytes. Require a store
     // and BX LR, with no calls, other branches, SP, or callee-saved registers.
     bool stored = false;
-    for (uint32_t pc = addr + 2u; pc < addr + 32u; pc += 2u) {
+    for (uint32_t pc = addr + 2u; uint64_t(pc) < uint64_t(addr) + 64u; pc += 2u) {
         if (pc >= aot_scan_end_ || !can_read_at(pc, 2) || addr_in_data_range(pc))
             return false;
         const auto ins = armv4t::ThumbDecoder::decode(read_u16(pc), pc);
@@ -514,13 +516,36 @@ std::vector<FunctionSeed> FunctionFinder::collect_referenced_callback_seeds() {
     std::unordered_set<uint32_t> objects;
     std::unordered_set<uint32_t> referenced_code;
     std::unordered_set<uint32_t> callback_globals;
+    std::unordered_set<uint32_t> store_globals;
     std::unordered_set<uint64_t> emitted;
     for (const auto& seed : seeds_) emitted.insert(visit_key(seed.addr, seed.mode));
+    std::unordered_map<uint32_t, uint32_t> leaf_globals;
+    auto leaf_global = [&](uint32_t pc) {
+        const auto found = leaf_globals.find(pc);
+        if (found != leaf_globals.end()) return found->second;
+        uint32_t ram = 0;
+        is_thumb_ram_leaf(pc, &ram);
+        leaf_globals.emplace(pc, ram);
+        return ram;
+    };
+    auto emit_callback = [&](uint32_t pc) {
+        if (!emitted.insert(visit_key(pc, CpuMode::Thumb)).second) return;
+        out.push_back({pc, CpuMode::Thumb, "", 0, /*speculative=*/true});
+        aot_seen_seed_keys_.insert(visit_key(pc, CpuMode::Thumb));
+        ++stats_.aot_callback_seeds;
+    };
+    auto anchor_callback = [&](uint32_t pc) {
+        const auto roots=thumb_ram_store_roots(pc);
+        store_globals.insert(roots.begin(),roots.end());
+        emit_callback(pc);
+    };
 
-    // Inspect only the first two words of an explicitly referenced ROM object
-    // outside the reviewed executable span. Both words must be odd Thumb code
-    // pointers: at least one PUSH-LR entry corroborates its neighbor, which
-    // must be another PUSH-LR entry or a RAM-global leaf.
+    // Referenced data objects need two tagged Thumb entries, including a
+    // PUSH-LR entry corroborating another prologue or a RAM-global leaf.
+    // Executable scan spans can also contain callback records (including a
+    // conservative whole-ROM span). Without an authoritative data range,
+    // require four distinct PUSH-LR entries there instead of treating an
+    // arbitrary adjacent pair of instruction words as a descriptor.
     // No table-end guess or unrestricted harvesting of pointer-shaped words.
     for (std::size_t off = 0; off + 4 <= rom_size_; off += 4) {
         const uint32_t object = read_u32(rom_base_ + static_cast<uint32_t>(off));
@@ -528,16 +553,57 @@ std::vector<FunctionSeed> FunctionFinder::collect_referenced_callback_seeds() {
         if ((object & 1u) && code >= aot_scan_start_ && code < aot_scan_end_)
             referenced_code.insert(code);
         if ((object & 3u) || !addr_in_rom(object) ||
-            (object >= aot_scan_start_ && object < aot_scan_end_) ||
-            !can_read_at(object, 8) || !objects.insert(object).second) continue;
-        const uint32_t raw[2] = {read_u32(object), read_u32(object + 4u)};
-        uint32_t target[2] = {};
-        uint32_t ram_global[2] = {};
-        bool push[2] = {}, leaf[2] = {};
+            !objects.insert(object).second) continue;
+        const auto* data = find_data_range(object);
+        const bool declared_data = data && uint64_t(object) + 8u <= data->end;
+        const bool executable = object >= aot_scan_start_ && object < aot_scan_end_;
+        // Some referenced descriptor arrays begin with an optional NULL pair
+        // and use long frameless setters. A fixed four-record witness can
+        // corroborate these without inferring an array's extent: every record
+        // must be NULL/NULL or a return-proved RAM setter plus a frame or RAM
+        // leaf callback,
+        // with two distinct setters and two distinct frame entries overall.
+        // An arbitrary executable-span pair still cannot qualify on its own.
+        if (executable && !declared_data && can_read_at(object, 32u)) {
+            std::set<uint32_t> leaves, frames, leaf_updates, globals;
+            bool valid = true;
+            for (unsigned record = 0; record < 4u; ++record) {
+                const uint32_t raw_leaf = read_u32(object + record*8u);
+                const uint32_t raw_frame = read_u32(object + record*8u + 4u);
+                if (!raw_leaf && !raw_frame) continue;
+                const uint32_t leaf = raw_leaf & ~1u, frame = raw_frame & ~1u;
+                if (!(raw_leaf & 1u) || !(raw_frame & 1u) ||
+                    leaf < aot_scan_start_ || leaf >= aot_scan_end_ ||
+                    frame < aot_scan_start_ || uint64_t(frame)+12u > aot_scan_end_) {
+                    valid = false; break;
+                }
+                const uint32_t ram = leaf_global(leaf);
+                if (!ram) { valid = false; break; }
+                leaves.insert(leaf); globals.insert(ram);
+                if (is_thumb_func_prologue(frame) && looks_like_code(frame, CpuMode::Thumb, true))
+                    frames.insert(frame);
+                else if (const uint32_t update_ram = leaf_global(frame)) {
+                    leaf_updates.insert(frame); globals.insert(update_ram);
+                } else { valid = false; break; }
+            }
+            if (valid && leaves.size() >= 2u && frames.size() >= 2u) {
+                ++stats_.aot_callback_objects;
+                callback_globals.insert(globals.begin(), globals.end());
+                for (uint32_t pc : leaves) anchor_callback(pc);
+                for (uint32_t pc : frames) anchor_callback(pc);
+                for (uint32_t pc : leaf_updates) anchor_callback(pc);
+            }
+        }
+        const unsigned fields = executable && !declared_data ? 4u : 2u;
+        if (!can_read_at(object, fields * 4u)) continue;
+        uint32_t target[4] = {};
+        uint32_t ram_global[4] = {};
+        bool push[4] = {}, leaf[4] = {}, all_push = true;
         bool valid = true;
-        for (unsigned i = 0; i < 2; ++i) {
-            target[i] = raw[i] & ~1u;
-            if (!(raw[i] & 1u) || target[i] < aot_scan_start_ ||
+        for (unsigned i = 0; i < fields; ++i) {
+            const uint32_t raw = read_u32(object + 4u * i);
+            target[i] = raw & ~1u;
+            if (!(raw & 1u) || target[i] < aot_scan_start_ ||
                 target[i] >= aot_scan_end_ ||
                 static_cast<uint64_t>(target[i]) + 12u > aot_scan_end_ ||
                 !looks_like_code(target[i], CpuMode::Thumb, true)) {
@@ -546,34 +612,105 @@ std::vector<FunctionSeed> FunctionFinder::collect_referenced_callback_seeds() {
             }
             push[i] = is_thumb_func_prologue(target[i]);
             leaf[i] = !push[i] && is_thumb_ram_leaf(target[i], &ram_global[i]);
+            all_push = all_push && push[i];
         }
         if (!valid || target[0] == target[1] || !(push[0] || push[1]) ||
             !(push[0] || leaf[0]) || !(push[1] || leaf[1])) continue;
+        if (fields == 4 && (!all_push ||
+            std::unordered_set<uint32_t>(target, target + fields).size() != fields))
+            continue;
         ++stats_.aot_callback_objects;
-        for (uint32_t ram : ram_global) {
+        for (unsigned i = 0; i < fields; ++i) {
+            const uint32_t ram = ram_global[i];
             if (ram != 0) callback_globals.insert(ram);
         }
-        for (uint32_t pc : target) {
-            if (!emitted.insert(visit_key(pc, CpuMode::Thumb)).second) continue;
-            out.push_back({pc, CpuMode::Thumb, "", 0, /*speculative=*/true});
-            aot_seen_seed_keys_.insert(visit_key(pc, CpuMode::Thumb));
-            ++stats_.aot_callback_seeds;
+        for (unsigned i = 0; i < fields; ++i) {
+            const uint32_t pc = target[i];
+            anchor_callback(pc);
         }
+    }
+    // Independent records may share the descriptor's already corroborated
+    // RAM-global setter contract. Validate each exact pair separately; do not
+    // scan from a base to a guessed terminator or classify intervening data.
+    if (!callback_globals.empty()) for (std::size_t off=0;off+8u<=rom_size_;off+=4u) {
+        const uint32_t slot=rom_base_+static_cast<uint32_t>(off);
+        const uint32_t raw_leaf=read_u32(slot), raw_frame=read_u32(slot+4u);
+        const uint32_t leaf=raw_leaf & ~1u, frame=raw_frame & ~1u;
+        if (!(raw_leaf & 1u) || !(raw_frame & 1u) || leaf==frame ||
+            leaf<aot_scan_start_ || leaf>=aot_scan_end_ ||
+            frame<aot_scan_start_ || uint64_t(frame)+12u>aot_scan_end_ ||
+            !is_thumb_func_prologue(frame) ||
+            !looks_like_code(frame,CpuMode::Thumb,true)) continue;
+        const uint32_t ram=leaf_global(leaf);
+        if (!ram || !callback_globals.count(ram)) continue;
+        emit_callback(leaf); emit_callback(frame);
     }
     // A script may also take setters individually rather than through the
     // descriptor. Require the same bounded leaf shape and the exact RAM-global
     // literal already corroborated by a descriptor, plus an odd ROM reference.
     std::vector<uint32_t> ordered_code(referenced_code.begin(), referenced_code.end());
     std::sort(ordered_code.begin(), ordered_code.end());
+    std::unordered_set<uint32_t> store_callbacks;
+    auto return_proved = [&](uint32_t pc) {
+        if(is_thumb_callback_leaf(pc)) return true;
+        if(!is_thumb_func_prologue(pc) || !looks_like_code(pc,CpuMode::Thumb,true)) return false;
+        const auto effects=thumb_call_effects(pc);
+        return effects.valid && !effects.writes_caller_stack && (effects.preserved & 0x2FF0u)==0x2FF0u;
+    };
+    std::unordered_set<uint32_t> deferred;
+    auto defer_callback = [&](uint32_t pc) {
+        if(emitted.count(visit_key(pc,CpuMode::Thumb)) || !deferred.insert(pc).second) return;
+        deferred_store_callbacks_.push_back({pc,CpuMode::Thumb,"",0,true});
+    };
     for (uint32_t pc : ordered_code) {
-        if (emitted.count(visit_key(pc, CpuMode::Thumb)) != 0) continue;
-        uint32_t ram = 0;
-        if (!is_thumb_ram_leaf(pc, &ram) || callback_globals.count(ram) == 0) continue;
-        emitted.insert(visit_key(pc, CpuMode::Thumb));
-        out.push_back({pc, CpuMode::Thumb, "", 0, /*speculative=*/true});
-        aot_seen_seed_keys_.insert(visit_key(pc, CpuMode::Thumb));
-        ++stats_.aot_callback_seeds;
+        const uint32_t ram=leaf_global(pc);
+        if(ram && callback_globals.count(ram)) emit_callback(pc); // existing contract
+        const auto roots=thumb_ram_store_roots(pc);
+        const bool shared=std::any_of(roots.begin(),roots.end(),[&](uint32_t root) {
+            return store_globals.count(root)!=0;
+        });
+        if(shared && return_proved(pc)) {
+            store_callbacks.insert(pc);
+            defer_callback(pc);
+        }
     }
+    // An exact tagged record may pair a proved shared-global callback with a
+    // return-proved update, including BX LR. This does not propagate globals
+    // from new callbacks or recursively qualify adjacent pointer-shaped words.
+    if(!store_callbacks.empty()) for(std::size_t off=0;off+8u<=rom_size_;off+=4u) {
+        const uint32_t slot=rom_base_+static_cast<uint32_t>(off);
+        const uint32_t first=read_u32(slot),second=read_u32(slot+4u),target=second & ~1u;
+        if(!(first & 1u) || !(second & 1u) || first==second ||
+           !store_callbacks.count(first & ~1u) || target<aot_scan_start_ ||
+           uint64_t(target)+2u>aot_scan_end_ || addr_in_data_range(target)) continue;
+        if(return_proved(target)) defer_callback(target);
+    }
+    // A framed initializer can call a complex helper for which the register
+    // effect analysis has no summary. Its exact paired RAM-global leaf still
+    // corroborates an entry when the initializer stores that same root AND
+    // another independently anchored RAM root. This supplies code provenance,
+    // not a call-effect summary: unknown callees remain unknown, and these
+    // pairs cannot introduce globals or recursively qualify adjacent records.
+    if(!callback_globals.empty() && store_globals.size()>=2u)
+        for(std::size_t off=0;off+8u<=rom_size_;off+=4u) {
+            const uint32_t slot=rom_base_+static_cast<uint32_t>(off);
+            const uint32_t first=read_u32(slot),second=read_u32(slot+4u);
+            const uint32_t target=first & ~1u,update=second & ~1u;
+            if(!(first & 1u) || !(second & 1u) || first==second ||
+               target<aot_scan_start_ || uint64_t(target)+12u>aot_scan_end_ ||
+               update<aot_scan_start_ || uint64_t(update)+2u>aot_scan_end_ ||
+               addr_in_data_range(target) || !is_thumb_func_prologue(target) ||
+               !looks_like_code(target,CpuMode::Thumb,true)) continue;
+            const uint32_t ram=leaf_global(update);
+            if(!ram || !callback_globals.count(ram)) continue;
+            const auto roots=thumb_ram_store_roots(target);
+            if(std::find(roots.begin(),roots.end(),ram)==roots.end()) continue;
+            const auto shared=std::count_if(roots.begin(),roots.end(),[&](uint32_t root) {
+                return store_globals.count(root)!=0;
+            });
+            if(shared<2) continue;
+            defer_callback(target);emit_callback(update);
+        }
     return out;
 }
 
@@ -751,6 +888,177 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
     };
     RegConst reg_const[16];
 
+    struct CopyLoopEntry {
+        uint32_t pc;
+        std::array<RegConst, 16> regs;
+    };
+    std::deque<CopyLoopEntry> copy_loop_entries;
+    auto harvest_callback_copy = [&](uint32_t start, uint32_t backedge,
+                                     const std::array<RegConst, 16>& initial) {
+        // Simulate only a short, straight-line ROM-to-RAM word-copy loop.
+        // Every operand must be known, and the actual CMP/backedge must
+        // terminate within the analysis budget. The budget is a rejection
+        // limit, never a guessed table length. No RAM is read or written.
+        if (aot_scan_start_ >= aot_scan_end_ || start >= backedge ||
+            backedge - start > 64u) return;
+        std::vector<armv4t::Instr> body;
+        for (uint32_t pos = start; pos <= backedge; pos += 2u) {
+            if (!can_read_walk_at(pos, 2) || addr_in_data_range(pos)) return;
+            auto decoded = armv4t::ThumbDecoder::decode(read_walk_u16(pos), pos);
+            if (decoded.is_undefined) return;
+            if (pos != backedge && (decoded.is_branch || decoded.is_call ||
+                                    decoded.cond != armv4t::Cond::AL)) return;
+            body.push_back(decoded);
+        }
+        const auto& branch = body.back();
+        if (branch.op != armv4t::IrOp::B || branch.branch_target != start ||
+            body.size() < 3 || body[body.size()-2].op != armv4t::IrOp::CMP)
+            return;
+        switch (branch.cond) {
+            case armv4t::Cond::CC: case armv4t::Cond::LS:
+            case armv4t::Cond::LT: case armv4t::Cond::LE:
+            case armv4t::Cond::NE: break;
+            default: return;
+        }
+        auto regs = initial;
+        std::array<uint32_t, 16> origin{};
+        struct CopyWord { uint32_t source, destination, value; };
+        std::vector<CopyWord> words;
+        bool terminated = false;
+        for (unsigned iteration = 0; iteration < 256; ++iteration) {
+            unsigned loads = 0, stores = 0;
+            uint32_t lhs = 0, rhs = 0;
+            auto get_reg = [&](uint8_t reg, uint32_t pc_value, uint32_t& value) {
+                if (reg == 15) { value = (pc_value + 4u) & ~3u; return true; }
+                if (reg >= 16 || !regs[reg].known) return false;
+                value = regs[reg].value;
+                return true;
+            };
+            auto operand = [&](const armv4t::Instr& op, uint32_t& value) {
+                if (op.op2.kind == armv4t::Op2::Kind::Imm) {
+                    value = op.op2.imm_value;
+                    return true;
+                }
+                if (op.op2.kind != armv4t::Op2::Kind::Shifted ||
+                    op.op2.shifted.by_register ||
+                    !get_reg(op.op2.shifted.rm, op.pc, value)) return false;
+                const unsigned shift = op.op2.shifted.imm_or_rs;
+                if (shift >= 32u) return false;
+                switch (op.op2.shifted.type) {
+                    case armv4t::ShiftType::LSL: value <<= shift; return true;
+                    case armv4t::ShiftType::LSR:
+                        if (!shift) return false;
+                        value >>= shift; return true;
+                    case armv4t::ShiftType::ASR:
+                        if (!shift) return false;
+                        value = (value >> shift) | ((value & 0x80000000u)
+                            ? (~uint32_t{0} << (32u-shift)) : 0u);
+                        return true;
+                    default: return false;
+                }
+            };
+            auto address = [&](const armv4t::Instr& op, uint32_t& value) {
+                if (!op.mem.pre_indexed || op.mem.writeback ||
+                    !get_reg(op.mem.rn, op.pc, value))
+                    return false;
+                uint32_t offset = op.mem.imm_offset;
+                if (op.mem.by_register) {
+                    const auto& shift = op.mem.reg_offset;
+                    if (shift.by_register || shift.type != armv4t::ShiftType::LSL ||
+                        shift.imm_or_rs >= 32u || !get_reg(shift.rm, op.pc, offset))
+                        return false;
+                    offset <<= shift.imm_or_rs;
+                }
+                value = op.mem.add ? value + offset : value - offset;
+                return (value & 3u) == 0;
+            };
+            for (std::size_t index = 0; index + 1 < body.size(); ++index) {
+                const auto& op = body[index];
+                uint32_t value = 0, left = 0;
+                if (op.op == armv4t::IrOp::CMP) {
+                    if (index + 2 != body.size() ||
+                        !get_reg(op.rn, op.pc, lhs) || !operand(op, rhs)) return;
+                } else if (op.op == armv4t::IrOp::STR) {
+                    uint32_t destination = 0;
+                    if (op.rd >= 15 || !regs[op.rd].known || !origin[op.rd] ||
+                        !address(op, destination) || ++stores != 1) return;
+                    const bool ram = (destination >= 0x02000000u && destination <= 0x0203FFFCu) ||
+                                     (destination >= 0x03000000u && destination <= 0x03007FF8u);
+                    if (!ram) return; // IRQ-vector/MMIO writes are not array copies.
+                    words.push_back({origin[op.rd], destination, regs[op.rd].value});
+                } else if (op.op == armv4t::IrOp::LDR) {
+                    uint32_t source = 0;
+                    if (op.rd >= 13 || !address(op, source) ||
+                        !addr_in_rom(source) || !can_read_at(source, 4)) return;
+                    regs[op.rd] = {true, read_u32(source)};
+                    origin[op.rd] = op.mem.rn == 15 ? 0u : source;
+                    if (origin[op.rd] && ++loads != 1) return;
+                } else if (op.op == armv4t::IrOp::MOV) {
+                    if (op.rd >= 13 || !operand(op, value)) return;
+                    const bool copy = op.op2.kind == armv4t::Op2::Kind::Shifted &&
+                        op.op2.shifted.type == armv4t::ShiftType::LSL &&
+                        op.op2.shifted.imm_or_rs == 0;
+                    const uint32_t source = copy ? origin[op.op2.shifted.rm] : 0u;
+                    regs[op.rd] = {true, value};
+                    origin[op.rd] = source;
+                } else if (op.op == armv4t::IrOp::ADD || op.op == armv4t::IrOp::SUB) {
+                    if (op.rd >= 13 || !get_reg(op.rn, op.pc, left) ||
+                        !operand(op, value)) return;
+                    regs[op.rd] = {true, op.op == armv4t::IrOp::ADD ? left + value : left - value};
+                    origin[op.rd] = 0;
+                } else {
+                    return;
+                }
+            }
+            if (loads != 1 || stores != 1) return;
+            if (words.size() > 1) {
+                const auto& prev = words[words.size()-2];
+                const auto& next = words.back();
+                if (uint64_t(prev.source)+4u != next.source ||
+                    uint64_t(prev.destination)+4u != next.destination) return;
+            }
+            const uint32_t result = lhs - rhs;
+            const bool n = (result >> 31) != 0, z = result == 0, c = lhs >= rhs;
+            const bool v = (((lhs ^ rhs) & (lhs ^ result)) >> 31) != 0;
+            bool taken = false;
+            switch (branch.cond) {
+                case armv4t::Cond::CC: taken = !c; break;
+                case armv4t::Cond::LS: taken = !c || z; break;
+                case armv4t::Cond::LT: taken = n != v; break;
+                case armv4t::Cond::LE: taken = z || n != v; break;
+                case armv4t::Cond::NE: taken = !z; break;
+                default: return;
+            }
+            if (!taken) { terminated = true; break; }
+        }
+        if (!terminated || words.size() < 2) return;
+        // Two independent PUSH-LR entries corroborate a callback array.
+        // RAM/null/payload words neither seed code nor truncate its proven
+        // copy extent. Leaf Thumb callbacks retain their actual pointer tag.
+        std::unordered_set<uint32_t> prologues;
+        for (const auto& word : words) {
+            const uint32_t target = word.value & ~1u;
+            if ((word.value & 1u) && target >= aot_scan_start_ &&
+                uint64_t(target)+12u <= aot_scan_end_ && addr_in_rom(target) &&
+                is_thumb_func_prologue(target) && looks_like_code(target, CpuMode::Thumb, true))
+                prologues.insert(target);
+        }
+        if (prologues.size() < 2) return;
+        std::size_t emitted = 0;
+        for (const auto& word : words) {
+            const uint32_t target = word.value & ~1u;
+            if (!(word.value & 1u) || target < aot_scan_start_ ||
+                uint64_t(target)+12u > aot_scan_end_ || !addr_in_rom(target) ||
+                !looks_like_code(target, CpuMode::Thumb, true) ||
+                !aot_seen_seed_keys_.insert(visit_key(target, CpuMode::Thumb)).second)
+                continue;
+            aot_pointer_seeds_.push_back({target, CpuMode::Thumb, "", 0, true});
+            ++stats_.aot_callback_seeds;
+            ++emitted;
+        }
+        if (emitted) ++stats_.aot_callback_objects;
+    };
+
     // Jump-table address tracking (MC-HP-000). The compiler builds a
     // dispatch like:  LDR Rb,=table ; LSL Ri,Ri,#k ; ADD Ra,Ri,Rb ;
     // LDR Rt,[Ra] ; BX Rt (or BL into the bx-rN veneer). reg_const
@@ -842,15 +1150,20 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         bool     count_known = false;
         uint32_t count       = 0;
         bool record_slots = false;
+        bool finite_sparse = false, signed_index = false;
     };
     PendingJt pend;
 
     // Finite byte indexes can select callback fields in record arrays. Keep
     // their actual multiply (e.g. (i*2+i)*8), not a guessed word-table stride.
-    struct ByteIndex { bool known=false; uint32_t origin=0, scale=0; };
-    struct RecordAddress { bool known=false; uint32_t base=0, stride=0; };
+    struct ByteIndex { bool known=false; uint32_t origin=0, scale=0; bool signed_index=false; };
+    struct RecordAddress { bool known=false; uint32_t base=0, stride=0; bool signed_index=false; };
     ByteIndex byte_index[16];
     RecordAddress record_address[16];
+    // Exact domains of byte-valued arguments. They qualify all 256 possible
+    // inputs to a callback selector, not a guessed length of its ROM table.
+    struct ByteDomain { bool known=false, signed_value=false; };
+    ByteDomain byte_domain[16];
 
     // A narrow, adjacent load/scale/ADD-pc chain. Unlike abs32 tables these
     // entries are unsigned halfword offsets from the *unaligned* Thumb PC.
@@ -866,6 +1179,9 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
     std::size_t next_switch_target = 0;
     uint32_t block_start = pc;
     bool in_switch_block = false;
+    uint32_t callback_branch_start=pc;
+    bool callback_branch_constant=false;
+    std::set<uint32_t> function_callback_branches;
 
     struct RegSym {
         bool    known = false;
@@ -1457,6 +1773,8 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             if (covered) continue;
             pc = block_start = target;
             in_switch_block = true;
+            callback_branch_start=pc;
+            callback_branch_constant=false;
             count = 0;  // retain the normal instruction limit per linear walk
             // Each case is a separate CFG entry. No constants, bounds, or
             // pending loads from the dispatcher dominate an arbitrary case.
@@ -1468,6 +1786,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 reg_sym[r] = {};
                 byte_index[r] = {};
                 record_address[r] = {};
+                byte_domain[r] = {};
             }
             clear_mem_const();
             last_cmp = {};
@@ -1508,6 +1827,63 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             ++stats_.undefined_instr_count;
             if (next_switch_block()) continue;
             break;
+        }
+
+        if(entry_mode==CpuMode::Thumb && entry_addr==entry_source && addr_in_rom(pc)) {
+            if(ins.op==armv4t::IrOp::MOV && ins.rd<13 &&
+               ins.op2.kind==armv4t::Op2::Kind::Imm) callback_branch_constant=true;
+            if(ins.op==armv4t::IrOp::B && ins.cond==armv4t::Cond::AL &&
+               ins.branch_target>pc && callback_branch_constant &&
+               pc>=callback_branch_start && pc-callback_branch_start<=64u) {
+                // Re-evaluate this predecessor's own instructions with every
+                // incoming register unknown. Constants may survive the join in
+                // this path only; none are assumed for other predecessors.
+                function_callback_branches.insert(callback_branch_start);
+            }
+        }
+
+        if (entry_mode == CpuMode::Thumb && ins.op == armv4t::IrOp::BL_prefix &&
+            can_read_walk_at(pc+2u, 2)) {
+            const auto low = armv4t::ThumbDecoder::decode(read_walk_u16(pc+2u), pc+2u);
+            if (low.op == armv4t::IrOp::BL_suffix) {
+                std::array<uint32_t, 4> arguments{};
+                uint8_t known = 0;
+                for (unsigned r = 0; r < 4; ++r) if (reg_const[r].known) {
+                    known |= uint8_t(1u << r);
+                    arguments[r] = reg_const[r].value;
+                }
+                harvest_contextual_callbacks((ins.branch_target+low.swi_imm)&~1u,
+                                              known, arguments);
+                for(unsigned r=0;r<4;++r) if(!(known & (1u<<r)) && byte_domain[r].known) {
+                    auto finite_arguments=arguments;
+                    for(unsigned byte=0;byte<256u;++byte) {
+                        finite_arguments[r]=byte_domain[r].signed_value && byte>=128u
+                            ? byte|0xFFFFFF00u : byte;
+                        harvest_contextual_callbacks((ins.branch_target+low.swi_imm)&~1u,
+                            uint8_t(known | (1u<<r)),finite_arguments,0,false,CallbackFlow::ByteDomain);
+                    }
+                }
+            }
+        }
+
+        if (entry_mode == CpuMode::Thumb && entry_addr == entry_source &&
+            addr_in_rom(pc)) {
+            if (ins.op == armv4t::IrOp::B && ins.cond != armv4t::Cond::AL &&
+                ins.branch_target < pc) {
+                for (const auto& saved : copy_loop_entries) {
+                    if (saved.pc == ins.branch_target) {
+                        harvest_callback_copy(saved.pc, pc, saved.regs);
+                        break;
+                    }
+                }
+            }
+            if (ins.is_branch || ins.is_call) copy_loop_entries.clear();
+            else {
+                CopyLoopEntry saved{pc, {}};
+                std::copy(std::begin(reg_const), std::end(reg_const), saved.regs.begin());
+                copy_loop_entries.push_back(saved);
+                if (copy_loop_entries.size() > 32) copy_loop_entries.pop_front();
+            }
         }
 
         if (entry_mode == CpuMode::Thumb) {
@@ -1867,15 +2243,18 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             }
             if (confirmed) {
                 ++stats_.jt_confirmations;
-                if (pend.record_slots) {
-                    // LDRB proves all 256 possible indexes. Null/payload slots
+                if (pend.record_slots || pend.finite_sparse) {
+                    // Byte loads prove all 256 possible indexes. Null/payload slots
                     // are skipped, never used as a heuristic table terminator.
                     // Require an interworking consumer and strong code entries;
                     // other record fields and their extents remain unclassified.
                     if (interworking) for (uint32_t n=0;n<256u;++n) {
-                        const uint64_t slot=uint64_t(pend.base)+uint64_t(n)*pend.stride;
-                        if (slot>UINT32_MAX || !can_read_at(uint32_t(slot),4)) continue;
+                        const int64_t index=pend.signed_index && n>=128u ? int64_t(n)-256 : int64_t(n);
+                        const int64_t slot=int64_t(pend.base)+index*pend.stride;
+                        if (slot<0 || slot>UINT32_MAX || !can_read_at(uint32_t(slot),4)) continue;
                         const uint32_t raw=read_u32(uint32_t(slot)),target=raw & ~1u;
+                        if(pend.finite_sparse && (target<aot_scan_start_ ||
+                            uint64_t(target)+12u>aot_scan_end_)) continue;
                         const CpuMode mode=(raw & 1u) ? CpuMode::Thumb : CpuMode::Arm;
                         const bool prologue=mode==CpuMode::Thumb
                             ? is_thumb_func_prologue(target) : is_arm_func_prologue(target);
@@ -1885,7 +2264,10 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                             ++stats_.aot_callback_seeds;
                         }
                     }
-                } else {
+                }
+                if (!pend.record_slots) {
+                    // Preserve the existing word-switch discovery and sizing;
+                    // finite sparse callback harvesting is additional evidence.
                     emit_jump_table(pend.base, pend.stride, ins.pc, interworking,
                                     pend.count_known ? pend.count : 0u);
                 }
@@ -1951,6 +2333,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
                 pend.count_known = count_known;
                 pend.count       = count;
                 pend.record_slots = false;
+                pend.finite_sparse = false;pend.signed_index=false;
             }
         }
 
@@ -1963,14 +2346,33 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             if ((base & 3u)==0 && address.stride>4u && (address.stride & 3u)==0) {
                 pend.active=true; pend.base=base; pend.stride=address.stride;
                 pend.dest=ins.rd; pend.record_slots=true;
+                pend.finite_sparse=false;pend.signed_index=address.signed_index;
+            } else if(aot_scan_start_<aot_scan_end_ && (base & 3u)==0 && address.stride==4u &&
+                      pend.active && pend.base==base && !pend.count_known) {
+                // Additional sparse callback admission requires an explicit
+                // executable span; every candidate target stays inside it.
+                pend.finite_sparse=true;pend.signed_index=address.signed_index;
             }
         }
 
         ByteIndex next_byte{};
         RecordAddress next_record{};
+        ByteDomain next_domain{};
         const auto& record_op=ins.op2;
-        if (ins.op==armv4t::IrOp::LDRB && ins.rd<15) {
-            next_byte={true,pc,1u};
+        if(ins.op==armv4t::IrOp::LDRB || ins.op==armv4t::IrOp::LDRSB)
+            next_domain={true,ins.op==armv4t::IrOp::LDRSB};
+        else if(ins.op==armv4t::IrOp::MOV && record_op.kind==armv4t::Op2::Kind::Shifted &&
+                !record_op.shifted.by_register && record_op.shifted.rm<16) {
+            const auto& shift=record_op.shifted;
+            if(shift.type==armv4t::ShiftType::LSL && shift.imm_or_rs==0)
+                next_domain=byte_domain[shift.rm];
+            else if(shift.imm_or_rs==24 &&
+                (shift.type==armv4t::ShiftType::LSR || shift.type==armv4t::ShiftType::ASR))
+                next_domain={true,shift.type==armv4t::ShiftType::ASR};
+        }
+        if ((ins.op==armv4t::IrOp::LDRB ||
+             (ins.op==armv4t::IrOp::LDRSB && aot_scan_start_<aot_scan_end_)) && ins.rd<15) {
+            next_byte={true,pc,1u,ins.op==armv4t::IrOp::LDRSB};
         } else if (record_op.kind==armv4t::Op2::Kind::Shifted &&
                    !record_op.shifted.by_register &&
                    record_op.shifted.type==armv4t::ShiftType::LSL &&
@@ -1980,27 +2382,31 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             const uint64_t scale=uint64_t(byte_index[rm].scale)<<shift;
             if (ins.op==armv4t::IrOp::MOV && byte_index[rm].known &&
                 scale*255u<=UINT32_MAX) {
-                next_byte={true,byte_index[rm].origin,uint32_t(scale)};
+                next_byte={true,byte_index[rm].origin,uint32_t(scale),byte_index[rm].signed_index};
             } else if (ins.op==armv4t::IrOp::ADD && ins.rn<15) {
                 const auto& lhs=byte_index[ins.rn];
                 if (lhs.known && byte_index[rm].known &&
-                    lhs.origin==byte_index[rm].origin &&
+                    lhs.origin==byte_index[rm].origin && lhs.signed_index==byte_index[rm].signed_index &&
                     (scale+lhs.scale)*255u<=UINT32_MAX)
-                    next_byte={true,lhs.origin,uint32_t(scale+lhs.scale)};
+                    next_byte={true,lhs.origin,uint32_t(scale+lhs.scale),lhs.signed_index};
                 else if (reg_const[ins.rn].known && byte_index[rm].known &&
                          addr_in_rom(reg_const[ins.rn].value) && scale*255u<=UINT32_MAX)
-                    next_record={true,reg_const[ins.rn].value,uint32_t(scale)};
+                    next_record={true,reg_const[ins.rn].value,uint32_t(scale),byte_index[rm].signed_index};
                 else if (shift==0 && reg_const[rm].known && lhs.known &&
                          addr_in_rom(reg_const[rm].value))
-                    next_record={true,reg_const[rm].value,lhs.scale};
+                    next_record={true,reg_const[rm].value,lhs.scale,lhs.signed_index};
             }
         }
         for (uint8_t reg=0;reg<16;++reg) if (may_clobber_register(ins,reg)) {
             byte_index[reg]={}; record_address[reg]={};
+            byte_domain[reg]={};
         }
+        if(ins.is_call || ins.op==armv4t::IrOp::BL_prefix || ins.op==armv4t::IrOp::BL_suffix)
+            for(auto& domain:byte_domain) domain={};
         if (ins.rd<15 && ins.cond==armv4t::Cond::AL) {
             if (next_byte.known) byte_index[ins.rd]=next_byte;
             if (next_record.known) record_address[ins.rd]=next_record;
+            if (next_domain.known) byte_domain[ins.rd]=next_domain;
         }
 
         // CMP-bound capture for exact jump-table sizing (MC-HP-000). The
@@ -2062,6 +2468,29 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
             } else if (ins.rd < 16 && reg_const[ins.rd].known) {
                 stored = reg_const[ins.rd].value;
                 known_value = true;
+            }
+
+            if (entry_mode == CpuMode::Thumb && known_value &&
+                ins.cond == armv4t::Cond::AL && !ins.mem.writeback)
+                harvest_stored_callback(stored);
+
+            // The real GBA BIOS branches through this word with BX on IRQ.
+            // A proved word store therefore supplies a typed code reference,
+            // including leaf ARM dispatchers without a PUSH-LR prologue.
+            // Discover its ROM body so the existing byte-guarded RAM catalog
+            // can also serve it when the game later copies it into IWRAM.
+            uint32_t vector_slot = 0;
+            if (known_value && ins.cond == armv4t::Cond::AL &&
+                !ins.mem.writeback && eval_mem_imm_addr(ins, &vector_slot) &&
+                vector_slot == 0x03007FFCu) {
+                const uint32_t target = stored & ~uint32_t{1};
+                const CpuMode mode = (stored & 1u) ? CpuMode::Thumb : CpuMode::Arm;
+                if (target >= 0x08000000u && addr_in_rom(target) &&
+                    looks_like_code(target, mode, /*strict=*/true) &&
+                    aot_seen_seed_keys_.insert(visit_key(target, mode)).second) {
+                    aot_pointer_seeds_.push_back({target, mode, "", 0, false});
+                    ++stats_.aot_callback_seeds;
+                }
             }
 
             if (!ins.mem.writeback &&
@@ -2439,6 +2868,10 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
         }
 
         pc += step;
+        if(ins.is_branch || ins.is_call || ins.op==armv4t::IrOp::SWI) {
+            callback_branch_start=pc;
+            callback_branch_constant=false;
+        }
         if (ins.is_call || ins.op == armv4t::IrOp::SWI) {
             ++relative_epoch;
             relative.active = false;
@@ -2497,6 +2930,7 @@ void FunctionFinder::discover_one(uint32_t entry_addr, CpuMode entry_mode,
     // Preserve the true (un-clamped) body-walk extent before run()'s
     // "next function start" clamp truncates end_addr (see Function::walk_end_addr).
     fn.walk_end_addr = fn.end_addr;
+    deferred_callback_branches_.insert(function_callback_branches.begin(), function_callback_branches.end());
     functions_.push_back(std::move(fn));
 }
 
@@ -2568,8 +3002,40 @@ void FunctionFinder::run(std::size_t max_functions) {
     }
 
     std::size_t pos = 0;
-    while (pos < worklist.size() &&
+    while ((pos < worklist.size() || !deferred_store_callbacks_.empty() || !deferred_callback_branches_.empty()) &&
            (functions_.size() < max_functions || required_remaining > 0)) {
+        if(pos==worklist.size()) {
+            if (deferred_store_callbacks_.empty()) {
+                // The branch extension must not spend the bounded call-site
+                // budget, or change traversal provenance, before the existing
+                // discovery closure completes. Recursive branch calls use a
+                // separate budget too; only completed code walks add roots.
+                const auto branches=std::move(deferred_callback_branches_);
+                deferred_callback_branches_.clear();
+                for (const auto pc:branches) harvest_contextual_callbacks(pc,0,{},0,true);
+                for (const auto& seed:aot_pointer_seeds_) {
+                    const auto k=visit_key(seed.addr,seed.mode);
+                    origin_mask[k]|=2u;
+                    if (enqueued.insert(k).second) worklist.push_back({seed,false});
+                }
+                aot_pointer_seeds_.clear();
+                if (pos==worklist.size()) continue;
+            }
+            // Establish the existing reachable closure before adding these
+            // conservative metadata roots. Preseeding an already reachable
+            // callback would otherwise change its walk's required/speculative
+            // provenance and could suppress discovery from that real caller.
+            for(const auto& seed:deferred_store_callbacks_) {
+                const uint64_t key=visit_key(seed.addr,seed.mode);
+                if(!enqueued.insert(key).second) continue;
+                aot_seen_seed_keys_.insert(key);
+                origin_mask[key]|=2u;
+                worklist.push_back({seed,false});
+                ++stats_.aot_callback_seeds;
+            }
+            deferred_store_callbacks_.clear();
+            continue;
+        }
         // Safety net: discovery must converge (worklist drains toward
         // empty). A runaway past this bound means a detector or decoder
         // change is seeding garbage — halt loudly rather than exhaust

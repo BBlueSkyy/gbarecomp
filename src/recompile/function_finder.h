@@ -22,6 +22,8 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -354,6 +356,21 @@ private:
     void harvest_relative_callbacks();
     std::vector<FunctionSeed> collect_code_copy_seeds() const;
     bool is_thumb_ram_leaf(uint32_t addr, uint32_t* ram_global = nullptr) const;
+    bool is_thumb_callback_leaf(uint32_t addr) const;
+    std::vector<uint32_t> thumb_ram_store_roots(uint32_t addr) const;
+    void harvest_stored_callback(uint32_t raw);
+    enum class CallbackFlow { Direct, ByteDomain, Branch };
+    void harvest_contextual_callbacks(uint32_t callee, uint8_t known_mask,
+                                      const std::array<uint32_t, 4>& arguments,
+                                      unsigned depth = 0, bool local_branch = false,
+                                      CallbackFlow flow = CallbackFlow::Direct);
+    struct ThumbCallEffects {
+        bool valid = false;
+        uint16_t preserved = 0;
+        bool writes_caller_stack = false;
+    };
+    ThumbCallEffects thumb_call_effects(uint32_t entry, CpuMode mode = CpuMode::Thumb,
+                                       unsigned depth = 0);
     std::vector<FunctionSeed> collect_referenced_callback_seeds();
     void discover_one(uint32_t addr, CpuMode mode,
                       const std::string& name,
@@ -366,6 +383,18 @@ private:
     // discover_one drops the function instead of hard-erroring.
     bool current_walk_speculative_ = false;
     bool current_walk_dropped_ = false;
+    std::set<std::array<uint32_t, 6>> callback_contexts_;
+    bool callback_context_budget_reported_ = false;
+    std::set<std::array<uint32_t, 6>> callback_byte_contexts_;
+    bool callback_byte_budget_reported_ = false;
+    std::unordered_set<uint32_t> callback_branch_contexts_;
+    bool callback_branch_budget_reported_ = false;
+    std::set<std::array<uint32_t, 6>> callback_branch_call_contexts_;
+    bool callback_branch_call_budget_reported_ = false;
+    std::set<uint32_t> deferred_callback_branches_;
+    std::unordered_map<uint64_t, ThumbCallEffects> thumb_call_effects_;
+    std::unordered_set<uint64_t> thumb_call_effects_active_;
+    std::vector<FunctionSeed> deferred_store_callbacks_;
 };
 
 }  // namespace gbarecomp
