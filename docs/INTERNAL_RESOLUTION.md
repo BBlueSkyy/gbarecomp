@@ -46,8 +46,10 @@ CPU raster, logical geometry and canonical state are unchanged.
 
 Rendering work and surface memory grow with the square of the scale. Relative
 to 4x, 8x has four times the pixels and 16x has sixteen times the pixels.
-Performance depends on hardware, view width and scene; neither guarantees
-full speed. At native aspect, 16x renders 3840x2560; a 284x160 widescreen view
+Up to 4x is recommended. Every in-game scale above 4x is labeled
+`(experimental)` and may run very slowly. Performance depends on hardware, view
+width and scene; higher scales do not guarantee full speed. At native aspect,
+16x renders 3840x2560; a 284x160 widescreen view
 renders 4544x2560. Sprite and HUD artwork remains native in all cases.
 
 Netplay uses the existing read-only presentation observer and private mirror.

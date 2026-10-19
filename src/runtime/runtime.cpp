@@ -3155,8 +3155,23 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         runtime_ui_config.menu.callbacks.set_text = runtime_ui_set_text;
 #endif
         if (opts.high_resolution_affine_provider) {
-            runtime_ui_config.features |= RECOMP_RUNTIME_UI_STANDARD_RESOLUTION_SCALE;
-            runtime_ui_config.resolution_scale_max = gba::GbaHighResolutionFrame::kMaxScale;
+            static const char* const resolution_choices[] = {
+                "1x", "2x", "3x", "4x",
+                "5x (experimental)", "6x (experimental)", "7x (experimental)",
+                "8x (experimental)", "9x (experimental)", "10x (experimental)",
+                "11x (experimental)", "12x (experimental)", "13x (experimental)",
+                "14x (experimental)", "15x (experimental)", "16x (experimental)"
+            };
+            static_assert(sizeof(resolution_choices) / sizeof(*resolution_choices) ==
+                          gba::GbaHighResolutionFrame::kMaxScale);
+            static const RecompRuntimeUiItem resolution_item{
+                RECOMP_RUNTIME_UI_KEY_RESOLUTION_SCALE,
+                "Display", "Resolution scale",
+                "Up to 4x is recommended. Higher scales are experimental and may run very slowly.",
+                RECOMP_RUNTIME_UI_CHOICE, 1, gba::GbaHighResolutionFrame::kMaxScale, 1,
+                resolution_choices, sizeof(resolution_choices) / sizeof(*resolution_choices), nullptr
+            };
+            runtime_ui_extras.push_back(resolution_item);
         }
         runtime_ui_config.features |=
             RECOMP_RUNTIME_UI_STANDARD_LINEAR_FILTER |
