@@ -298,9 +298,9 @@ void test_extended_view_geometry_and_clamp() {
         std::fprintf(stderr, "50:9 odd-width geometry mismatch\n");
         std::exit(1);
     }
-    static_assert(gba::GbaPpu::kMaxExtraX == 328 &&
-                  gba::GbaPpu::kMaxRenderWidth == 896,
-                  "engine horizontal capacity must cover 50:9 (889x160)");
+    static_assert(gba::GbaPpu::kMaxExtraX == 520 &&
+                  gba::GbaPpu::kMaxRenderWidth == 1280,
+                   "engine horizontal capacity must cover 50:9 at 208 lines");
     ppu.set_view_margins(1000, 1000, 7, 9);
     if (ppu.render_width() != gba::GbaPpu::kMaxRenderWidth ||
         ppu.view_extra_left() != gba::GbaPpu::kMaxExtraX ||
@@ -352,8 +352,13 @@ void test_extended_view_capability_policy() {
         std::exit(1);
     }
     g = resolve_view_geometry(2000, 2000, false, kEngineMax);
-    if (g.width != 896 || g.extra_left != 328 || g.extra_right != 328) {
-        std::fprintf(stderr, "896x160 engine capacity was not enforced\n");
+    if (g.width != 1280 || g.extra_left != 520 || g.extra_right != 520) {
+        std::fprintf(stderr, "1280x160 engine capacity was not enforced\n");
+        std::exit(1);
+    }
+    g = resolve_view_geometry(2000, 896, false, kEngineMax);
+    if (g.width != 896) {
+        std::fprintf(stderr, "existing 896px game ceiling was not preserved\n");
         std::exit(1);
     }
     g = resolve_view_geometry(2000, 569, false, kEngineMax);
@@ -411,7 +416,7 @@ void test_resize_driven_view_policy() {
     constexpr uint32_t kEngineMax = gba::GbaPpu::kMaxRenderWidth;
     const Case wide_cases[] = {
         {5000, 900, 896, 889}, {5000, 900, 576, 576}, {5000, 900, 569, 569},
-        {5000, 900, 480, 480}, {20000, 900, 2000, 896}, {3840, 1080, 896, 569},
+        {5000, 900, 480, 480}, {20000, 900, 2000, 1280}, {3840, 1080, 896, 569},
     };
     for (const Case& c : wide_cases) {
         if (resize_driven_view_width(c.w, c.h, c.max, kEngineMax) != c.expected) {

@@ -13,6 +13,7 @@
 
 namespace gbarecomp {
 struct GbaNetplayLaunch;
+struct ViewGeometry;
 
 struct TouchFrameInfo;   // touch_input.h
 class HostOverlay;       // host_overlay.h
@@ -59,6 +60,10 @@ struct RunOptions {
     // inputs, including its fixed/initial width request. Games with unrelated
     // catalogs leave this false.
     bool mod_owns_adaptive_view = false;
+    // Game-authored framing, applied before allocating/presenting the surface.
+    // Drawable dimensions are zero for a fixed/headless view. Null preserves
+    // the existing geometry of every other title; this is not a user setting.
+    void (*view_geometry)(ViewGeometry*, int drawable_width, int drawable_height) = nullptr;
     // Read-only title authorization for finer affine presentation. Null keeps
     // internal resolution at 1x and rejects unsupported enhancement requests.
     bool (*high_resolution_affine_provider)(int bg, int screen_y) = nullptr;

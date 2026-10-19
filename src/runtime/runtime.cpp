@@ -1811,7 +1811,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 requested_width = 240;
         }
 #endif
-        const ViewGeometry geometry = resolve_view_geometry(
+        ViewGeometry geometry = resolve_view_geometry(
             requested_width, opts.max_view_width, ws_wip_enabled,
             gba::GbaPpu::kMaxRenderWidth);
         if (geometry.width == 240 && requested_width != 240 &&
@@ -1827,7 +1827,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 "game's validated maximum; clamping to %ux160\n",
                 requested_width, geometry.width);
         }
-        ppu.set_view_margins(geometry.extra_left, geometry.extra_right, 0, 0);
+        if (opts.view_geometry) opts.view_geometry(&geometry, 0, 0);
+        ppu.set_view_margins(geometry.extra_left, geometry.extra_right,
+                             geometry.extra_top, geometry.extra_bottom);
         args.view_width = static_cast<int>(ppu.render_width());
 #if defined(GBARECOMP_RUNTIME_UI)
         runtime_ui_context.view_mode = resize_view_enabled
@@ -2885,7 +2887,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             ++high_resolution_presented;
         } else win.present(live_fb.data());
     };
-    auto apply_runtime_view_geometry = [&](const ViewGeometry& geometry) -> bool {
+    auto apply_runtime_view_geometry = [&](ViewGeometry geometry) -> bool {
+        if (opts.view_geometry) opts.view_geometry(&geometry, 0, 0);
         if (geometry.width == ppu.render_width() && geometry.height == ppu.render_height()) return false;
         // Headless diagnostic playback applies recorded geometry without a
         // window; the guest-visible policy below is identical either way.
@@ -2960,6 +2963,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 opts.max_resize_view_height, gba::GbaPpu::kMaxRenderWidth,
                 gba::GbaPpu::kMaxRenderHeight);
         }
+        if (!request.native_view && opts.view_geometry)
+            opts.view_geometry(&geometry, drawable_w, drawable_h);
         if (!apply_runtime_view_geometry(geometry)) return false;
         if (!args.quiet) {
             std::fprintf(stderr,

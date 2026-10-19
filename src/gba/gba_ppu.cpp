@@ -52,6 +52,9 @@ extern "C" int (*g_ws_obj_attr_x_provider)(int, std::uint16_t,
 // still run first, so a game can re-place known-safe HUD sprites and clip the
 // rest.
 extern "C" int g_ws_obj_native_clip = 0;
+extern "C" int (*g_ws_obj_attr_y_provider)(int, std::uint16_t,
+                                            std::uint16_t, std::uint16_t,
+                                            int*) = nullptr;
 extern "C" const WsMarginObjPixel* (*g_ws_obj_margin_provider)(int, int*, int*) = nullptr;
 
 namespace {
@@ -1867,7 +1870,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
         }
     }
 
-    if (native_row && (dispcnt & 0x1000u)) {
+    if ((native_row || g_ws_obj_attr_y_provider) && (dispcnt & 0x1000u)) {
         constexpr uint32_t obj_tile_base = 0x10000u;
         bool obj_1d_mapping = (dispcnt & 0x0040u) != 0;
         const uint8_t* obj_pal = pal + 0x200;
@@ -1892,6 +1895,11 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
             const int raw_sx = static_cast<int>(attr1 & 0x1FFu);
             int sx = raw_sx;
             if (sy >= 160) sy -= 256;
+            int authored_sy = sy;
+            const bool authored_y = g_ws_obj_attr_y_provider &&
+                g_ws_obj_attr_y_provider(idx, attr0, attr1, attr2, &authored_sy);
+            if (!native_row && !authored_y) continue;
+            if (authored_y) sy = authored_sy;
             auto resolve_sx = [&] {
                 int provided_sx = sx;
                 if (g_ws_obj_attr_x_provider &&
@@ -1933,7 +1941,10 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
                     (screen_x < static_cast<int>(ox) ||
                      screen_x >= static_cast<int>(ox) + static_cast<int>(kVanW)))
                     return;
-                if (!layer_enabled(static_cast<uint32_t>(screen_x), 4)) return;
+                const bool authored_margin = authored_y && g_ws_authored_margin_layers &&
+                    (!native_row || screen_x < static_cast<int>(ox) ||
+                     screen_x >= static_cast<int>(ox) + static_cast<int>(kVanW));
+                if (!layer_enabled(static_cast<uint32_t>(screen_x), 4) && !authored_margin) return;
                 int tile_x_in_sprite = tex_x >> 3;
                 int tile_y_in_sprite = tex_y >> 3;
                 int px_in_tile = tex_x & 7;
@@ -1963,7 +1974,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
                 }
                 const uint16_t color = load_u16_le(&obj_pal[pal_index * 2]);
                 uint32_t ux = static_cast<uint32_t>(screen_x);
-                bool t1 = blend_enabled(ux) && obj_mode == 1;
+                bool t1 = (blend_enabled(ux) || authored_margin) && obj_mode == 1;
                 submit(ux, color, key, 4, t1, obj_target2);
             };
             if (rot_scale) {
