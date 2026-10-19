@@ -2926,7 +2926,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 const std::uint32_t requested = runtime_ui_context.view_mode ==
                     RECOMP_RUNTIME_UI_VIEW_FIXED_16_9
                         ? static_cast<std::uint32_t>(std::min<int>(
-                              opts.max_view_width, (160 * 16 + 8) / 9))
+                              opts.max_view_width, (160 * 16 + 4) / 9))
                         : 240u;
                 return apply_runtime_view_geometry(resolve_view_geometry(
                     requested, opts.max_view_width, false, gba::GbaPpu::kMaxRenderWidth));
