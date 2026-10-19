@@ -59,6 +59,9 @@ struct RunOptions {
     // inputs, including its fixed/initial width request. Games with unrelated
     // catalogs leave this false.
     bool mod_owns_adaptive_view = false;
+    // Read-only title authorization for finer affine presentation. Null keeps
+    // internal resolution at 1x and rejects unsupported enhancement requests.
+    bool (*high_resolution_affine_provider)(int bg, int screen_y) = nullptr;
 
     // Extended horizontal view is a game-owned enhancement capability, not a
     // generic emulator toggle. Values above the native 240 are the opt-in;

@@ -9,10 +9,10 @@
 // correctness oracle (PRINCIPLES.md "BIOS is sacred — recompiled and
 // dispatched"). HLE is an *alternative*, selected per-game via the config
 // (`[bios].hle = true`), the `--bios-hle` CLI flag, or the GBARECOMP_BIOS_HLE
-// env var. It is the PRINCIPLES.md "verified-enhancement HLE" carve-out: opt-in,
-// LLE stays load-bearing, and any SWI the HLE layer does not implement
-// transparently falls through to the recompiled BIOS (so HLE never breaks a
-// game and is never load-bearing beyond what it covers).
+// env var. These are existing legacy selectors, not the build-time architecture
+// required for new HLE services in HLE.md. Implemented SWIs replace BIOS work;
+// unimplemented SWIs follow the original route. This mechanism alone supplies
+// no blanket compatibility, timing or netplay qualification guarantee.
 //
 // Mechanism: bios_hle_set_mode() installs (or clears) the runtime_swi hook
 // g_bios_hle_hook (declared in runtime_arm.h). With HLE on, runtime_swi calls

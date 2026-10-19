@@ -150,6 +150,10 @@ public:
     // Upload one base_w x base_h RGB888 frame (the dimensions passed to open())
     // and present.
     void present(const uint8_t* rgb888);
+    // Sampled texture dimensions are independent of logical view/touch units.
+    // The enhanced texture is uploaded and presented directly, without a
+    // native-resolution intermediate render target.
+    void present(const uint8_t* rgb888, unsigned width, unsigned height);
 
     // Push `count` int16_t mono samples into the audio output queue. The SDL
     // backend configures its resampler for a 65.536 kHz source; the real

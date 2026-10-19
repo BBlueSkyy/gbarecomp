@@ -1,6 +1,7 @@
 // host_window.cpp — SDL2-backed window. Stubs out when SDL2 isn't found.
 
 #include "host_window.h"
+#include <stdexcept>
 
 #include <algorithm>
 #include <array>
@@ -2185,17 +2186,35 @@ bool HostWindow::drawable_size(int* width, int* height) const {
            *width > 0 && *height > 0;
 }
 
-void HostWindow::present(const uint8_t* rgb888) {
+void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
+
+void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
     if (!open_ || !impl_ || !rgb888) return;
     auto* b = static_cast<Backend*>(impl_);
+    if (!sampled_w) sampled_w = unsigned(b->base_w);
+    if (!sampled_h) sampled_h = unsigned(b->base_h);
+    int texture_w = 0, texture_h = 0;
+    SDL_QueryTexture(b->texture, nullptr, nullptr, &texture_w, &texture_h);
+    if (texture_w != int(sampled_w) || texture_h != int(sampled_h)) {
+        SDL_Texture* replacement = SDL_CreateTexture(b->renderer,
+            SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, int(sampled_w), int(sampled_h));
+        if (!replacement) throw std::runtime_error("cannot allocate presentation texture");
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+        SDL_SetTextureScaleMode(replacement, b->linear_filter ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+#endif
+        SDL_DestroyTexture(b->texture); destroy_sharp_texture(b);
+        b->texture = replacement;
+        std::fprintf(stderr, "host_window: render surface logical=%dx%d internal=%ux%u\n",
+                     b->base_w, b->base_h, sampled_w, sampled_h);
+    }
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
-    if (b->color_lut && !b->color_lut->is_passthrough() &&
-        b->graded_fb.size() == static_cast<std::size_t>(b->base_w) * b->base_h * 3u) {
-        b->color_lut->map_rgb888(rgb888, b->graded_fb.data(), b->base_w, b->base_h);
+    if (b->color_lut && !b->color_lut->is_passthrough()) {
+        b->graded_fb.resize(size_t(sampled_w) * sampled_h * 3);
+        b->color_lut->map_rgb888(rgb888, b->graded_fb.data(), sampled_w, sampled_h);
         rgb888 = b->graded_fb.data();
     }
-    SDL_UpdateTexture(b->texture, nullptr, rgb888, b->base_w * 3);
+    SDL_UpdateTexture(b->texture, nullptr, rgb888, sampled_w * 3);
     SDL_SetRenderDrawColor(b->renderer, 7, 11, 20, 255);
     SDL_RenderClear(b->renderer);
 #if defined(__ANDROID__)
@@ -2273,7 +2292,7 @@ void HostWindow::present(const uint8_t* rgb888) {
             const SDL_Rect destination = {
                 layout.x, layout.y, layout.width, layout.height};
             bool sharp_presented = false;
-            const int sharp_factor = b->sharp_filter
+            const int sharp_factor = b->sharp_filter && sampled_w == unsigned(b->base_w) && sampled_h == unsigned(b->base_h)
                 ? compute_sharp_prescale_factor(
                       layout, b->base_w, b->base_h)
                 : 0;
@@ -3095,6 +3114,7 @@ bool HostWindow::drawable_size(int* /*width*/, int* /*height*/) const {
 }
 
 void HostWindow::present(const uint8_t* /*rgb888*/) {}
+void HostWindow::present(const uint8_t*, unsigned, unsigned) {}
 
 void HostWindow::load_input_config(const char* /*dir*/,
                                    bool /*assist_tools_default*/,

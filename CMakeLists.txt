@@ -290,6 +290,7 @@ add_library(gbarecomp_gba STATIC
     src/gba/gba_dma.cpp
     src/gba/gba_timers.cpp
     src/gba/gba_ppu.cpp
+    src/gba/gba_high_resolution.cpp
     src/gba/gba_audio.cpp
     src/gba/mod_audio.cpp
     src/gba/gba_m4a.cpp
@@ -999,6 +1000,7 @@ target_link_libraries(thumb_tests PRIVATE gbarecomp_armv4t)
 add_test(NAME thumb_tests COMMAND thumb_tests)
 
 add_gbarecomp_runtime_stack_test(bus_tests tests/bus/test_main.cpp)
+add_gbarecomp_runtime_stack_test(high_resolution_tests tests/ppu/high_resolution_test.cpp)
 add_gbarecomp_runtime_stack_test(dma_tests tests/dma/test_main.cpp)
 add_gbarecomp_runtime_stack_test(dma_bulk_tests tests/dma/bulk_test_main.cpp)
 add_gbarecomp_runtime_stack_test(timer_tests tests/timers/test_main.cpp)

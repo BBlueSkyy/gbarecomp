@@ -1,6 +1,7 @@
 // gba_ppu.cpp — see gba_ppu.h.
 
 #include "gba_ppu.h"
+#include "gba_color.h"
 #include "foreign_presentation_internal.h"
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 
 #include "snapshot.h"
 
@@ -114,6 +116,7 @@ void GbaPpu::serialize(gbarecomp::debug::SnapshotWriter& w) const {
 }
 
 void GbaPpu::deserialize(gbarecomp::debug::SnapshotReader& r) {
+    if (high_resolution_) high_resolution_->invalidate();
     // Foreign presentation is intentionally not save-state data.  A selected
     // trusted mod must explicitly republish a newly valid buffer after load.
     foreign_presentation_internal::clear();
@@ -166,6 +169,7 @@ void GbaPpu::deserialize(gbarecomp::debug::SnapshotReader& r) {
 }
 
 void GbaPpu::reset() {
+    if (high_resolution_) high_resolution_->invalidate();
     foreign_presentation_internal::clear();
     scanline_ = 0;
     dot_in_scanline_ = 0;
@@ -192,6 +196,7 @@ void GbaPpu::set_view_margins(uint32_t left, uint32_t right,
         // render after a live resize rather than interpreting it at the new
         // dimensions. Timing state and guest memory remain untouched.
         has_latched_fb_ = false;
+        if (high_resolution_) high_resolution_->invalidate();
     }
     extra_left_ = next_left;
     extra_right_ = next_right;
@@ -484,67 +489,15 @@ ForeignObjFocusResult apply_foreign_obj_focus(int* sx, int* sy, int width,
 }
 
 // Convert 16-bit GBA color (0BBBBBGGGGGRRRRR) to 24-bit RGB888.
-inline void to_rgb888(uint16_t c, uint8_t* out) {
-    // 5 → 8 bit expansion: ((v << 3) | (v >> 2)) gives full-range 0..255.
-    uint8_t r = (c >>  0) & 0x1F;
-    uint8_t g = (c >>  5) & 0x1F;
-    uint8_t b = (c >> 10) & 0x1F;
-    out[0] = static_cast<uint8_t>((r << 3) | (r >> 2));
-    out[1] = static_cast<uint8_t>((g << 3) | (g >> 2));
-    out[2] = static_cast<uint8_t>((b << 3) | (b >> 2));
-}
-
-inline uint16_t blend_alpha_gba555(uint16_t top,
-                                   uint16_t bottom,
-                                   uint32_t eva,
-                                   uint32_t evb) {
-    if (eva > 16) eva = 16;
-    if (evb > 16) evb = 16;
-    const uint32_t tr = top & 31u;
-    const uint32_t tg = ((top >> 4) & 62u) | (top >> 15);
-    const uint32_t tb = (top >> 10) & 31u;
-    const uint32_t br = bottom & 31u;
-    const uint32_t bg = ((bottom >> 4) & 62u) | (bottom >> 15);
-    const uint32_t bb = (bottom >> 10) & 31u;
-
-    // The GBA blends in its native color domain, rounds to nearest (+8 before
-    // the 4-bit division), and carries a sixth green precision bit in palette
-    // bit 15. Only after blending is green reduced to the displayed 5 bits.
-    // Doing this on already-expanded RGB888 values produces subtly wrong colors.
-    const uint32_t r = std::min(31u, (tr * eva + br * evb + 8u) >> 4);
-    const uint32_t g6 = std::min(63u, (tg * eva + bg * evb + 8u) >> 4);
-    const uint32_t b = std::min(31u, (tb * eva + bb * evb + 8u) >> 4);
-    return static_cast<uint16_t>((b << 10) | ((g6 >> 1) << 5) | r);
-}
-
-inline uint16_t brighten_gba555(uint16_t color, uint32_t evy) {
-    if (evy > 16) evy = 16;
-    uint32_t r = color & 31u;
-    uint32_t g6 = ((color >> 4) & 62u) | (color >> 15);
-    uint32_t b = (color >> 10) & 31u;
-    r += ((31u - r) * evy + 8u) >> 4;
-    g6 += ((63u - g6) * evy + 8u) >> 4;
-    b += ((31u - b) * evy + 8u) >> 4;
-    return static_cast<uint16_t>((b << 10) | ((g6 >> 1) << 5) | r);
-}
-
-inline uint16_t darken_gba555(uint16_t color, uint32_t evy) {
-    if (evy > 16) evy = 16;
-    uint32_t r = color & 31u;
-    uint32_t g6 = ((color >> 4) & 62u) | (color >> 15);
-    uint32_t b = (color >> 10) & 31u;
-    // Hardware rounds the subtractive term with +7 rather than +8.
-    r -= (r * evy + 7u) >> 4;
-    g6 -= (g6 * evy + 7u) >> 4;
-    b -= (b * evy + 7u) >> 4;
-    return static_cast<uint16_t>((b << 10) | ((g6 >> 1) << 5) | r);
-}
+using color::to_rgb888;
+using color::blend_alpha_gba555;
+using color::brighten_gba555;
+using color::darken_gba555;
 
 inline uint16_t load_u16_le(const uint8_t* p) {
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
-
-}  // namespace
+} // namespace
 
 // Read a signed 16-bit Q8.8 affine parameter from IO.
 static inline int32_t read_s16(const uint8_t* io, uint32_t off) {
@@ -1410,7 +1363,8 @@ void render_scanline_internal(uint8_t* rgb,
 void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
                           const uint8_t* io, const uint8_t* vram,
                           const uint8_t* oam, const uint8_t* pal,
-                          uint32_t out_w, uint32_t ox, uint32_t oy = 0) {
+                          uint32_t out_w, uint32_t ox, uint32_t oy = 0,
+                          GbaHighResolutionFrame* hd = nullptr) {
     constexpr uint32_t kVanW = GbaPpu::kScreenWidth;   // 240
     constexpr uint32_t kVanH = GbaPpu::kScreenHeight;  // 160
     if (g_ws_native_view_left >= 0)
@@ -1516,8 +1470,10 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
     // WIN0/WIN1/OBJ-window branches for the backdrop, every BG, and every OBJ
     // pixel. The fixed-size stack array covers the renderer's clamped width.
     uint8_t window_controls[GbaPpu::kMaxRenderWidth];
-    for (uint32_t x = 0; x < out_w; ++x)
+    for (uint32_t x = 0; x < out_w; ++x) {
         window_controls[x] = static_cast<uint8_t>(window_control(x) & 0x3Fu);
+        if (hd) hd->window(x, window_controls[x]);
+    }
     auto layer_enabled = [&](uint32_t x, uint32_t layer_bit) -> bool {
         return (window_controls[x] & (1u << layer_bit)) != 0;
     };
@@ -1553,6 +1509,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
     }
     auto submit = [&](uint32_t x, uint16_t color, int key, uint8_t layer,
                       bool target1, bool target2) {
+        if (hd) hd->submit(x, color, key, layer, target1, target2);
         PixelCandidate cand;
         cand.color = color;
 #if !defined(GBARECOMP_SCANLINE_HLE)
@@ -2118,6 +2075,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
               (g_ws_pillarbox_left && left_margin) ||
               (g_ws_pillarbox_right && right_margin)))) {
             dst[0] = dst[1] = dst[2] = 0;
+            if (hd) hd->black_column(x);
             continue;
         }
         // Alpha blend top (1st target) with the layer below (2nd target). Per
@@ -2148,6 +2106,7 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
 #endif
         }
     }
+    if (hd) hd->resolve();
 }
 
 }  // namespace
@@ -2430,6 +2389,10 @@ void GbaPpu::render_scanline(uint32_t y,
                              const uint8_t* vram,
                              const uint8_t* oam,
                              const uint8_t* pal) {
+    if (high_resolution_) {
+        high_resolution_->configure(render_width(), render_height());
+        if (y == 0) high_resolution_->begin_frame();
+    }
     if (presentation_) presentation_->scanline(*this, y, dispcnt, io, vram, oam, pal);
     // BG2/BG3 affine coordinates are backed by hidden current-reference
     // registers. With constant PB/PD, ref + y*delta is equivalent. Mario Kart
@@ -2467,10 +2430,24 @@ void GbaPpu::render_scanline(uint32_t y,
     }
 
     if (!rasterization_enabled_) return;
+    // The enhanced surface consumes only published raster inputs. Its tile
+    // stack and history never replace native pixels or advance device time.
+    GbaHighResolutionFrame* hd = high_resolution_.get();
+    const bool hd_line = hd && hd->begin_line(int(y), extra_left_, extra_top_,
+        dispcnt, affine_io.data(), vram, pal,
+        foreign_presentation_internal::background() ||
+        foreign_presentation_internal::screen_overlay() ? nullptr : high_resolution_provider_,
+        g_ws_affine_filter_enabled != 0);
     if (!view_expanded()) {
         render_scanline_internal(work_fb_.data(), y, dispcnt,
                                  affine_io.data(), vram, oam, pal,
                                  kScreenWidth, kScreenHeight);
+        if (hd_line) {
+            // The expanded compositor may apply optional presentation filters.
+            // Keep its native scratch entirely separate from canonical pixels.
+            render_scanline_wide(hd->native_scratch(), int(y), dispcnt,
+                affine_io.data(), vram, oam, pal, render_width(), 0, 0, hd);
+        } else if (hd) hd->upscale_line(y, work_fb_.data() + y * render_width() * 3);
         return;
     }
     // Host-authored extra rows use this frame's published state once, at
@@ -2480,10 +2457,14 @@ void GbaPpu::render_scanline(uint32_t y,
             if (sy >= 0 && sy < static_cast<int>(kScreenHeight)) continue;
             render_scanline_wide(work_fb_.data(), sy, dispcnt, io, vram, oam, pal,
                                  render_width(), extra_left_, extra_top_);
+            if (hd) hd->upscale_line(unsigned(sy + int(extra_top_)),
+                work_fb_.data() + size_t(sy + int(extra_top_)) * render_width() * 3);
         }
     }
     render_scanline_wide(work_fb_.data(), y, dispcnt, affine_io.data(),
-                         vram, oam, pal, render_width(), extra_left_, extra_top_);
+                         vram, oam, pal, render_width(), extra_left_, extra_top_, hd_line ? hd : nullptr);
+    if (hd && !hd_line) hd->upscale_line(y + extra_top_,
+        work_fb_.data() + size_t(y + extra_top_) * render_width() * 3);
 }
 
 void GbaPpu::note_affine_reference_write(unsigned bg, bool y_axis) {
@@ -2514,6 +2495,7 @@ void GbaPpu::mark_framebuffer_latched() {
     if (rasterization_enabled_)
         std::memcpy(latched_fb_.data(), work_fb_.data(), render_bytes());
     has_latched_fb_ = true;
+    if (high_resolution_) high_resolution_->latch();
     if (presentation_) presentation_->frame_ready();
 }
 
@@ -2526,3 +2508,17 @@ void GbaPpu::set_rasterization_enabled(bool enabled) {
 }
 
 }  // namespace gba
+
+namespace gba {
+void GbaPpu::set_internal_resolution(unsigned scale, HighResolutionAffineProvider provider) {
+    if (scale < 1 || scale > 4)
+        throw std::invalid_argument("internal resolution must be from 1 through 4");
+    high_resolution_provider_ = provider;
+    if (scale == internal_resolution()) return;
+    if (scale == 1) high_resolution_.reset();
+    else {
+        high_resolution_ = std::make_unique<GbaHighResolutionFrame>(scale);
+        high_resolution_->configure(render_width(), render_height());
+    }
+}
+} // namespace gba
