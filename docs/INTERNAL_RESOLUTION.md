@@ -2,7 +2,7 @@
 
 Games can authorize finer affine-background sampling with
 `RunOptions::high_resolution_affine_provider`. The first pilot is Mario Kart:
-Super Circuit's race BG2. This is a local presentation enhancement, disabled
+Super Circuit's mode-1 BG2, including the pre-HUD course fly-in. This is a local presentation enhancement, disabled
 at 1x by default. It does not add detail to original sprites or HUD artwork.
 
 Use the game's optional mod or `--internal-resolution 2|3|4`. A capable game
@@ -78,6 +78,9 @@ Bounded runtime diagnostics distinguish `complete_frames`/`affine_lines`/
 actual window presentation. `--uncapped` removes pacing while retaining normal
 render/audio work. `--dump-state` writes an explicit final diagnostic snapshot;
 `--dump-png` captures the completed enhanced raster. Keep automated audio muted.
+The TCP command `presentation_screenshot` inspects the completed enhanced raster
+and its sampled dimensions/counters. `screenshot` keeps its native accuracy
+surface. Neither query changes simulation state.
 
 See the title's `docs/INTERNAL_RESOLUTION.md` for the measured pilot, fixture
 identity, reproducible command and remaining limits.

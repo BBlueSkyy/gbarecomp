@@ -968,7 +968,8 @@ void dispatch(const TcpDebugServer::Context& ctx, std::string_view req,
         out = body;
         return;
     }
-    if (contains("\"screenshot\"")) {
+    const bool presentation_shot = contains("\"presentation_screenshot\"");
+    if (presentation_shot || contains("\"screenshot\"")) {
         if (!ctx.bus || !ctx.ppu) { emit_error(out, "ppu unavailable"); return; }
         const uint8_t* rgb = nullptr;
         std::vector<uint8_t> live;
@@ -984,11 +985,26 @@ void dispatch(const TcpDebugServer::Context& ctx, std::string_view req,
                             ctx.bus->pal_ptr());
             rgb = live.data();
         }
+        unsigned width = ctx.ppu->render_width(), height = ctx.ppu->render_height();
+        if (presentation_shot && ctx.ppu->high_resolution_framebuffer()) {
+            rgb = ctx.ppu->high_resolution_framebuffer();
+            width = ctx.ppu->high_resolution()->width();
+            height = ctx.ppu->high_resolution()->height();
+        }
+        // Ordinary screenshots remain native for existing accuracy tooling.
+        // The explicit presentation command inspects the completed host raster.
         // Dimensions track the active view (240x160 faithful, wider when
         // view-area expansion is on) so oracle tooling sees the real frame.
-        out = "{\"ok\":true,\"w\":" + std::to_string(ctx.ppu->render_width()) +
-              ",\"h\":" + std::to_string(ctx.ppu->render_height()) + ",\"data\":";
-        json_emit_hex(out, rgb, ctx.ppu->render_bytes());
+        out = "{\"ok\":true,\"w\":" + std::to_string(width) +
+              ",\"h\":" + std::to_string(height);
+        if (presentation_shot) {
+            const auto* hd = ctx.ppu->high_resolution();
+            out += ",\"scale\":" + std::to_string(ctx.ppu->internal_resolution()) +
+                ",\"affine_lines\":" + std::to_string(hd ? hd->affine_lines() : 0) +
+                ",\"samples\":" + std::to_string(hd ? hd->samples() : 0);
+        }
+        out += ",\"data\":";
+        json_emit_hex(out, rgb, size_t(width) * height * 3);
         out += "}";
         return;
     }
