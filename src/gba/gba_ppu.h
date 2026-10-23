@@ -270,6 +270,10 @@ extern "C" unsigned g_ws_bg_x_provider_layers;
 // the source's window masks; the guest's tilemap and graphics stay untouched.
 extern "C" int (*g_ws_bg_xy_provider)(int bg, int x, int y, int* source_x, int* source_y);
 extern "C" unsigned g_ws_bg_xy_provider_layers;
+// Optional already-composited, read-only UI pixels in expanded/native-origin
+// coordinates. Return nonzero to submit RGB555 above the scene. Native 240x160
+// rendering never calls this provider.
+extern "C" int (*g_ws_ui_pixel_provider)(int x, int y, std::uint16_t* color);
 // Optional enhancement for affine backgrounds in expanded rendering. The
 // global switch is presentation configuration; the provider lets a game
 // authorize only known-safe layers and scenes.

@@ -1925,7 +1925,36 @@ void test_latched_frame_immune_to_in_progress_scanlines() {
 
 } // namespace
 
+int ui_pixel_calls = 0;
+int authored_ui_pixel(int x, int y, std::uint16_t* color) {
+    ++ui_pixel_calls;
+    if (x != -1 || y != -1) return 0;
+    *color = 31;
+    return 1;
+}
+void test_authored_ui_pixels_are_expanded_only() {
+    Fixture f;
+    store16(f.pal.data(),0x7C00);
+    gba::g_ws_ui_pixel_provider = authored_ui_pixel;
+    f.ppu.render(f.rgb.data(),0,f.io.data(),f.vram.data(),f.oam.data(),f.pal.data());
+    if (ui_pixel_calls) std::exit(1);
+    expect_pixel(f.rgb.data(),0,0,255,"native UI provider must be inert");
+    f.ppu.set_view_margins(1,1,1,1);
+    gba::g_ws_authored_margin_layers = 1;
+    gba::g_ws_tilemap_provider = test_margin_tilemap;
+    std::vector<std::uint8_t> wide(242*162*3);
+    f.ppu.render(wide.data(),0,f.io.data(),f.vram.data(),f.oam.data(),f.pal.data());
+    expect_pixel(wide.data(),255,0,0,"authored UI at portrait/landscape corner");
+    expect_pixel(wide.data()+(1*242+1)*3,0,0,255,"UI provider must preserve other pixels");
+    gba::g_ws_ui_pixel_provider = nullptr;
+    f.ppu.render(wide.data(),0,f.io.data(),f.vram.data(),f.oam.data(),f.pal.data());
+    expect_pixel(wide.data(),0,0,255,"UI provider reset");
+    gba::g_ws_authored_margin_layers = 0;
+    gba::g_ws_tilemap_provider = nullptr;
+}
+
 int main() {
+    test_authored_ui_pixels_are_expanded_only();
     test_alpha_native_domain_and_green_precision();
     test_brightness_native_domain_and_green_precision();
     test_extended_view_geometry_and_clamp();

@@ -28,6 +28,7 @@ extern "C" int (*g_ws_bg_x_provider)(int bg, int output_x, int screen_y,
 extern "C" unsigned g_ws_bg_x_provider_layers = 0xFu;
 extern "C" int (*g_ws_bg_xy_provider)(int, int, int, int*, int*) = nullptr;
 extern "C" unsigned g_ws_bg_xy_provider_layers = 0xFu;
+extern "C" int (*g_ws_ui_pixel_provider)(int, int, std::uint16_t*) = nullptr;
 extern "C" int g_ws_affine_filter_enabled = 0;
 extern "C" int (*g_ws_affine_filter_provider)(int, int) = nullptr;
 extern "C" int g_ws_authored_margin_layers = 0;
@@ -2069,6 +2070,10 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
         }
     }
     for (uint32_t x = 0; x < out_w; ++x) {
+        uint16_t ui_color = 0;
+        if (g_ws_ui_pixel_provider &&
+            g_ws_ui_pixel_provider(static_cast<int>(x) - static_cast<int>(ox), y, &ui_color))
+            submit(x, ui_color & 0x7FFFu, -1, 0, false, false);
         uint8_t* dst = row + x * 3;
         // OBJ-only presentations (notably the real GBA BIOS logo) author the
         // whole backdrop through palette entry 0. There is no regular-BG
