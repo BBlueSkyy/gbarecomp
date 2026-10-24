@@ -987,7 +987,7 @@ void GbaAudio::shadow_driver_tick(uint32_t pc, bool thumb) {
     // Each tick, at its exact point: a fixed-rate poll drifts against the
     // driver's VBlank cadence and mostly finds SoundInfo idle (not 'Smsh'+1),
     // or past the mixer's note-on processing.
-    if (!shadow_enabled_) return;
+    if (!shadow_enabled_ || sample_rate() != 65536u) return;
     shadow_.frame_hook(shadow_mem_, shadow_cursor_, thumb ? (pc | 1u) : pc);
 }
 
@@ -1040,7 +1040,9 @@ int16_t GbaAudio::psg_low_pass(int16_t in) {
 void GbaAudio::mix_slot(uint32_t slot) {
     bool substitute = false;
     float sl = 0.0f, sr = 0.0f;
-    if (shadow_enabled_) {
+    // Mp2kShadow advances on a fixed 65536-Hz grid. Other SOUNDBIAS rates
+    // retain the faithful mixer until rate-aware shadow rendering exists.
+    if (shadow_enabled_ && sample_rate() == 65536u) {
         std::string degraded;
         shadow_.render(shadow_mem_, fifo_a_.samples[slot],
                        fifo_b_.samples[slot], sl, sr, degraded);
