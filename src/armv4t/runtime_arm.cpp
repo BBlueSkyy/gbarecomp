@@ -423,11 +423,8 @@ extern "C" void runtime_insn_fp(void) {
 // continuation, loudly. SoftReset (SWI 00) never returns — its stale entry
 // is cleared at the next machine-reset / load origin (runtime_fp_reset).
 namespace {
-struct SwiReturnSlot {
-    uint32_t continuation;  // return_address recorded at SVC entry
-    uint32_t return_pc;    // the SWI instruction's site (R[15] at entry)
-};
-constexpr unsigned kSwiLedgerCap = 64u;
+using SwiReturnSlot = gbarecomp::RuntimeSwiContinuation;
+constexpr unsigned kSwiLedgerCap = gbarecomp::kRuntimeSwiLimit;
 SwiReturnSlot g_swi_ledger[kSwiLedgerCap];
 unsigned       g_swi_ledger_depth = 0;
 }  // namespace
@@ -468,11 +465,7 @@ static void swi_ledger_push(uint32_t continuation, uint32_t return_pc) {
 extern "C" void runtime_fp_reset(void) {
     g_fp_write = 0;
     g_fp_count = 0;
-    // The SWI-return ledger is host bookkeeping, not emulated state: clear it
-    // at every machine reset / savestate-load origin (SoftReset's never-returned
-    // SWI would otherwise leave a stale entry that could override a legal
-    // post-reboot SVC return).
-    g_swi_ledger_depth = 0;
+    // Trace reset also runs after load; execution continuations survive it.
 }
 
 extern "C" uint32_t runtime_fp_count(void) { return g_fp_count; }
@@ -1819,19 +1812,31 @@ extern "C" void runtime_irq(uint32_t return_address) {
 // ── Lifecycle ──────────────────────────────────────────────────────
 
 extern "C" void runtime_init(void* bus_handle) {
+    g_swi_ledger_depth = 0;
     gbarecomp::runtime_arm::g_bus_handle = bus_handle;
     g_call_return_depth = 0;
     g_call_return_hostless = 0;
 }
 
 extern "C" void runtime_shutdown(void) {
+    g_swi_ledger_depth = 0;
     gbarecomp::runtime_arm::g_bus_handle = nullptr;
     g_call_return_depth = 0;
     g_call_return_hostless = 0;
 }
 
 namespace gbarecomp {
+void runtime_capture_swi_context(std::vector<RuntimeSwiContinuation>& out) {
+    out.assign(g_swi_ledger, g_swi_ledger + g_swi_ledger_depth);
+}
+void runtime_restore_swi_context(const std::vector<RuntimeSwiContinuation>& in) {
+    if (in.size() > kSwiLedgerCap)
+        throw std::invalid_argument("invalid SWI continuation depth");
+    std::copy(in.begin(), in.end(), g_swi_ledger);
+    g_swi_ledger_depth = static_cast<unsigned>(in.size());
+}
 void runtime_capture_arm_context(RuntimeArmContext& out) {
+    runtime_capture_swi_context(out.swi_returns);
     out.cpu = g_cpu;
     out.returns.assign(g_call_return_stack, g_call_return_stack + g_call_return_depth);
     out.return_floor = g_call_return_floor;
@@ -1848,12 +1853,15 @@ void runtime_capture_arm_context(RuntimeArmContext& out) {
     out.bios_hook = g_bios_hle_hook;
 }
 void runtime_restore_arm_context(const RuntimeArmContext& in) {
+    if (in.swi_returns.size() > kSwiLedgerCap)
+        throw std::invalid_argument("invalid SWI continuation depth");
     if (in.returns.size() > kCallReturnStackSize || in.return_floor > in.returns.size() ||
         in.irq_depth != in.interrupts.size())
         throw std::invalid_argument("invalid runtime execution context");
     for (const auto& frame : in.interrupts)
         if (frame.return_floor > frame.return_depth || frame.return_depth > in.returns.size())
             throw std::invalid_argument("invalid IRQ continuation");
+    runtime_restore_swi_context(in.swi_returns);
     g_cpu = in.cpu;
     runtime_call_stack_restore(in.returns.data(), static_cast<std::uint32_t>(in.returns.size()));
     g_call_return_floor = in.return_floor;
