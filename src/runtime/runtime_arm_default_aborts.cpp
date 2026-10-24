@@ -42,6 +42,7 @@
 #include "../gba/gba_bus.h"
 
 #include <algorithm>
+#include <atomic>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -51,6 +52,11 @@
 #include <string>
 #include <system_error>
 #include <vector>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -175,7 +181,14 @@ std::vector<gbarecomp::SelfHealMiss> sorted_misses() {
 // so a reader (or a crash mid-write) never sees a truncated file.
 bool write_file_atomically(const std::string& path, const std::string& body,
                            const char* what) {
-    const std::string tmp = path + ".tmp";
+    static std::atomic<unsigned long long> sequence{0};
+#if defined(_WIN32)
+    const auto pid = _getpid();
+#else
+    const auto pid = getpid();
+#endif
+    const std::string tmp = path + "." + std::to_string(pid) + "." +
+        std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)) + ".tmp";
     std::FILE* f = std::fopen(tmp.c_str(), "wb");
     if (!f) {
         std::fprintf(stderr, "self_heal: could not open %s for the %s\n",
@@ -439,7 +452,7 @@ void self_heal_set_persist_paths(const char* frag_path,
 }
 
 void self_heal_persist(const char* phase) {
-    if (!g_persist_frag.empty() && !g_misses.empty())
+    if (!g_persist_frag.empty())
         write_file_atomically(g_persist_frag, frag_text(), "miss proposal");
     if (!g_persist_cov.empty())
         write_file_atomically(g_persist_cov, misses_json(phase) + "\n",
