@@ -20,6 +20,7 @@
 // step_once() becomes a real `runtime_dispatch` driver.
 
 #include "runtime.h"
+#include "suspend_guard.h"
 #include "multiplayer_launch.h"
 #include "view_config.h"
 
@@ -3754,8 +3755,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             const std::string state_path = suspend_state_path();
             const bool suspended = do_savestate_save(state_path, e);
             if (suspended) {
-                std::ofstream marker(suspend_marker_path(), std::ios::trunc);
-                marker << ppu.frame_count() << "\n";
+                write_suspend_marker(suspend_marker_path(), args.save_path, ppu.frame_count());
             }
             if (ev.terminating) suspend_on_exit = suspended;
             std::fprintf(stderr,
@@ -3989,8 +3989,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     auto autosave_now = [&](uint64_t frame) {
         std::string e;
         if (do_savestate_save(suspend_state_path(), e)) {
-            std::ofstream marker(suspend_marker_path(), std::ios::trunc);
-            marker << frame << "\n";
+            if (!write_suspend_marker(suspend_marker_path(), args.save_path, frame))
+                std::fprintf(stderr, "[gbarecomp:runtime] autosave marker FAILED\n");
             autosave_failure_logged = false;
         } else if (!autosave_failure_logged) {
             std::fprintf(stderr, "[gbarecomp:runtime] autosave FAILED: %s\n",
@@ -4428,7 +4428,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         // The previous session was suspended by the OS and never came back
         // (killed in the background, or swiped away): resume it.
         std::error_code ec;
-        if (std::filesystem::exists(suspend_marker_path(), ec) &&
+        if (suspend_marker_matches_battery(suspend_marker_path(), args.save_path) &&
             std::filesystem::exists(suspend_state_path(), ec)) {
             std::string e;
             if (do_savestate_load(suspend_state_path(), e)) {

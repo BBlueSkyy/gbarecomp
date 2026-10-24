@@ -863,6 +863,10 @@ add_executable(mod_audio_tests
 target_include_directories(mod_audio_tests PRIVATE src/gba)
 add_test(NAME mod_audio_tests COMMAND mod_audio_tests)
 
+add_executable(suspend_guard_tests tests/runtime/suspend_guard_test.cpp src/gba/sha1.cpp)
+target_include_directories(suspend_guard_tests PRIVATE src/runtime)
+add_test(NAME suspend_guard_tests COMMAND suspend_guard_tests)
+
 add_executable(file_replace_tests tests/debug/file_replace_test.cpp)
 target_link_libraries(file_replace_tests PRIVATE gbarecomp_debug)
 add_test(NAME file_replace_tests COMMAND file_replace_tests)
