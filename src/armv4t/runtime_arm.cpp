@@ -421,7 +421,8 @@ extern "C" void runtime_insn_fp(void) {
 // LLE entry, pop+validate at every SVC-mode exception return (generated
 // and interpreted). A legal return matches; a mismatch keeps the recorded
 // continuation, loudly. SoftReset (SWI 00) never returns — its stale entry
-// is cleared at the next machine-reset / load origin (runtime_fp_reset).
+// is cleared at a real machine reset. Context switches and save/load retain
+// the active ledger; resetting the trace ring does not reset execution.
 namespace {
 using SwiReturnSlot = gbarecomp::RuntimeSwiContinuation;
 constexpr unsigned kSwiLedgerCap = gbarecomp::kRuntimeSwiLimit;
