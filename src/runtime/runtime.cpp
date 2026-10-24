@@ -252,6 +252,7 @@ struct Args {
 #define GBARECOMP_UI_KEY_FAST_FORWARD   "assist.fast_forward"
 #define GBARECOMP_UI_KEY_FAST_FORWARD_SPEED "assist.fast_forward_speed"
 #define GBARECOMP_UI_KEY_REWIND          "assist.rewind"
+#define GBARECOMP_UI_KEY_QUIT            "system.quit"
 
 struct RuntimeUiContext {
     HostWindow* window = nullptr;
@@ -268,6 +269,7 @@ struct RuntimeUiContext {
     int pending_load_slot = 0;
     bool pending_rewind = false;
     bool pending_quit = false;
+    std::chrono::steady_clock::time_point quit_confirmation_until{};
     bool assist_tools_exposed = false;
     bool assist_tools_enabled = true;
     bool fast_forward_latched = false;
@@ -371,7 +373,13 @@ int runtime_ui_action(void* opaque, const RecompRuntimeUiItem* item) {
         recomp_runtime_ui_close(c->ui);
         return 1;
     }
-    if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_QUIT) == 0) {
+    if (std::strcmp(item->key, GBARECOMP_UI_KEY_QUIT) == 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now > c->quit_confirmation_until) {
+            c->quit_confirmation_until = now + std::chrono::seconds(3);
+            return 1;
+        }
+        c->quit_confirmation_until = {};
         c->pending_quit = true;
         recomp_runtime_ui_close(c->ui);
         return 1;
@@ -3207,7 +3215,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         // routed to the game, so the menu is the only clean way out: it ends
         // the session (save flushed, no suspend state) and the Activity
         // finishes, returning to whatever started it.
-        runtime_ui_config.features |= RECOMP_RUNTIME_UI_STANDARD_QUIT;
+        // Use the stable custom-action interface: maintained recomp-ui pins
+        // need not define the newer standard-quit flag or key constants.
 #endif
         runtime_ui_config.view_modes = RECOMP_RUNTIME_UI_VIEW_MODE_NATIVE;
         if (opts.launcher_expose_widescreen && opts.max_view_width > 240)
@@ -3302,6 +3311,16 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 runtime_ui_extras.push_back(rewind_item);
             }
         }
+
+#if defined(__ANDROID__)
+        RecompRuntimeUiItem quit_item{};
+        quit_item.key = GBARECOMP_UI_KEY_QUIT;
+        quit_item.section = "System";
+        quit_item.label = "Quit game";
+        quit_item.description = "Select twice within 3 seconds to quit.";
+        quit_item.type = RECOMP_RUNTIME_UI_ACTION;
+        runtime_ui_extras.push_back(quit_item);
+#endif
 
         RecompRuntimeUiItem fps_item{};
         fps_item.key         = GBARECOMP_UI_KEY_FPS;
