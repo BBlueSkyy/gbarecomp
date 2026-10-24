@@ -2168,10 +2168,17 @@ static void note_present_for_health(Backend* b) {
     if (!b->health_first_present) b->health_first_present = now;
     if (b->bridge_ready) {
         rab_stats st;
-        rab_get_stats(&b->bridge, &st);  // plain copy; counters only grow
+        // The SDL audio callback writes these counters under this mutex.
+        SDL_LockMutex(b->audio_mtx);
+        rab_get_stats(&b->bridge, &st);
+        SDL_UnlockMutex(b->audio_mtx);
         if (gap_us <= 100000ull) {
-            b->health_play_underrun += st.underrun_events - b->health_seen_underrun;
-            b->health_play_overflow += st.overflow_drops - b->health_seen_overflow;
+            // A bridge restart (resume or source-rate change) resets counters.
+            // Never subtract a previous epoch's larger unsigned value.
+            if (st.underrun_events >= b->health_seen_underrun)
+                b->health_play_underrun += st.underrun_events - b->health_seen_underrun;
+            if (st.overflow_drops >= b->health_seen_overflow)
+                b->health_play_overflow += st.overflow_drops - b->health_seen_overflow;
         }
         b->health_seen_underrun = st.underrun_events;
         b->health_seen_overflow = st.overflow_drops;
