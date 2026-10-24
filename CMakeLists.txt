@@ -985,6 +985,8 @@ add_executable(stack_guard_tests
     tests/runtime/stack_guard_test.cpp
     src/runtime/mobile_platform.cpp)
 target_include_directories(stack_guard_tests PRIVATE src/runtime)
+find_package(Threads REQUIRED)
+target_link_libraries(stack_guard_tests PRIVATE Threads::Threads)
 add_test(NAME stack_guard_tests COMMAND stack_guard_tests)
 
 # Self-heal proposal clustering — pure logic, links only the standalone

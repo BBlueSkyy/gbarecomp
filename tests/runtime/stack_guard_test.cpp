@@ -8,6 +8,8 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <future>
+#include <thread>
 
 namespace {
 int failures = 0;
@@ -17,7 +19,12 @@ void check(bool cond, const char* msg) {
 
 // Recurse to `target`, then probe. noinline + volatile frames keep the
 // compiler from collapsing the descent into a loop.
-__attribute__((noinline)) bool descend(unsigned depth, unsigned target) {
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+bool descend(unsigned depth, unsigned target) {
     volatile char pad[4096];
     pad[0] = static_cast<char>(depth);
     pad[sizeof(pad) - 1] = static_cast<char>(depth >> 8);
@@ -43,6 +50,24 @@ int main() {
     check(!gbarecomp::host_stack_critically_low(&top),
           "unarmed critical tier reads false");
 #if defined(__linux__)
+    std::promise<void> armed, release;
+    auto ready = armed.get_future();
+    auto released = release.get_future();
+    bool worker_armed = false;
+    std::thread worker([&] {
+        gbarecomp::host_stack_guard_arm_current(4u * 1024u * 1024u);
+        worker_armed = gbarecomp::mobile_stack_over_budget(reinterpret_cast<void*>(1));
+        armed.set_value();
+        released.wait();
+    });
+    ready.wait();
+    check(worker_armed, "worker guard is armed");
+    check(!gbarecomp::mobile_stack_over_budget(reinterpret_cast<void*>(1)),
+          "worker stack bounds must not arm another thread");
+    check(!gbarecomp::host_stack_critically_low(reinterpret_cast<void*>(1)),
+          "worker critical tier must not leak to another thread");
+    release.set_value();
+    worker.join();
     // Arm a 4 MiB reserve, then consume past the budget line (~1500 live
     // 4 KiB frames ≈ 6 MiB) while remaining megabytes above the critical
     // tier. This is the shape the runtime relies on: unwind through the

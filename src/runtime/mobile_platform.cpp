@@ -27,13 +27,13 @@ namespace gbarecomp {
 // Host-stack budget guard state (see mobile_stack_over_budget). File-local;
 // armed per thread by run_stacked (mobile) or
 // host_stack_guard_arm_current (desktop finite-stack threads).
-static std::uintptr_t g_stack_guard_lo = 0;
+static thread_local std::uintptr_t g_stack_guard_lo = 0;
 // Critical tier: fires even inside a live IRQ handler (which normally gates the
 // guard off) when the stack is so low that the handler cannot possibly complete
 // anyway. Covers the stuck-nest-depth state (g_irq_nest_depth never returns to
 // 0 after a guest-return/IRQ interleave), where the primary gate would
 // otherwise leave the nesting unbounded.
-static std::uintptr_t g_stack_guard_crit_lo = 0;
+static thread_local std::uintptr_t g_stack_guard_crit_lo = 0;
 
 #if defined(__ANDROID__)
 namespace {
@@ -50,18 +50,10 @@ void* run_stacked(void* arg) {
     // runtime's own transient frames between two instruction-boundary
     // checks, then unwind through the standard yield path.
     constexpr std::size_t kGuardMargin = 32u * 1024u * 1024u;
-    const std::size_t budget = call->stack_bytes > kGuardMargin
-        ? call->stack_bytes - kGuardMargin
-        : call->stack_bytes / 2u;
-    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(&call);
-    g_stack_guard_lo = base - budget;
-    // Critical tier: allow unwinding even inside a live IRQ handler when the
-    // stack is within ~0.5 MiB of the bottom (a stuck nest depth otherwise
-    // disables the primary gate; see host_stack_critically_low).
-    const std::uintptr_t bottom = base - call->stack_bytes;
-    g_stack_guard_crit_lo = bottom + 512u * 1024u;
+    host_stack_guard_arm_current(kGuardMargin);
     call->result = call->entry(call->argc, call->argv);
     g_stack_guard_lo = 0;
+    g_stack_guard_crit_lo = 0;
     return nullptr;
 }
 }  // namespace
@@ -113,6 +105,8 @@ bool host_stack_critically_low(const void* probe) {
 // thread, where the split vblank-wait loop's per-iteration host calls can
 // nest past the default 8 MiB (see runtime_bus_bridge.cpp guard block).
 void host_stack_guard_arm_current(std::size_t reserve_bytes) {
+    g_stack_guard_lo = 0;
+    g_stack_guard_crit_lo = 0;
 #if defined(__linux__)
     pthread_attr_t attr;
     void*  base = nullptr;
