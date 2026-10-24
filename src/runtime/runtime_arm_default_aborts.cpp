@@ -42,11 +42,18 @@
 #include "../gba/gba_bus.h"
 
 #include <algorithm>
+#include <atomic>
+#include <filesystem>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <vector>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -115,7 +122,14 @@ void write_frag_file(const char* frag_path) {
     const auto clusters =
         gbarecomp::self_heal_cluster_misses(sorted, kJtMaxGap, kJtMinRun);
 
-    std::string tmp = std::string(frag_path) + ".tmp";
+    static std::atomic<unsigned long long> sequence{0};
+#if defined(_WIN32)
+    const auto pid = _getpid();
+#else
+    const auto pid = getpid();
+#endif
+    const std::string tmp = std::string(frag_path) + "." + std::to_string(pid) + "." +
+        std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)) + ".tmp";
     std::FILE* f = std::fopen(tmp.c_str(), "w");
     if (!f) {
         std::fprintf(stderr,
@@ -171,12 +185,12 @@ void write_frag_file(const char* frag_path) {
                   : "");
         }
     }
-    std::fclose(f);
-    if (std::rename(tmp.c_str(), frag_path) == 0) return;
-    // Windows: rename cannot replace an existing file — remove, retry once.
-    std::remove(frag_path);
-    if (std::rename(tmp.c_str(), frag_path) != 0) {
-        std::remove(tmp.c_str());
+    const bool wrote = std::ferror(f) == 0;
+    const bool closed = std::fclose(f) == 0;
+    std::error_code ec;
+    if (wrote && closed) std::filesystem::rename(tmp, frag_path, ec);
+    if (!wrote || !closed || ec) {
+        std::filesystem::remove(tmp, ec);
         std::fprintf(stderr,
                      "self_heal: could not write %s for the miss proposal\n",
                      frag_path);
