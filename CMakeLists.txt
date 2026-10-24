@@ -1011,6 +1011,17 @@ find_package(Threads REQUIRED)
 target_link_libraries(stack_guard_tests PRIVATE Threads::Threads)
 add_test(NAME stack_guard_tests COMMAND stack_guard_tests)
 
+# FramePacer banked-frame throttling — wall-clock pacing, links only
+# src/runtime/host_platform.cpp.
+add_executable(pacer_tests
+    tests/runtime/pacer_test.cpp
+    src/runtime/host_platform.cpp)
+target_include_directories(pacer_tests PRIVATE src/runtime)
+if(WIN32)
+    target_link_libraries(pacer_tests PRIVATE winmm)
+endif()
+add_test(NAME pacer_tests COMMAND pacer_tests)
+
 # Self-heal proposal clustering — pure logic, links only the standalone
 # clustering TU (no runtime/bus/overlay dependencies).
 add_executable(selfheal_cluster_test
