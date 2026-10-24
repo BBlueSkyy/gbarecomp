@@ -569,14 +569,6 @@ void record_and_log_miss(std::uint32_t pc, bool thumb) {
                 "GBARECOMP_SELFHEAL_VERBOSE=1 for per-PC diagnostics.\n");
         }
 
-        // Durability guard: journal the proposal fragment NOW, while the miss
-        // is fresh — an unclean end (hung close, kill, crash) then cannot lose
-        // it. Env-gated: the playtest/tooling flows (play.sh, cycle.py) set it.
-        // Quiet; one bounded rewrite per distinct missed PC.
-        if (const char* frag = std::getenv("GBARECOMP_MISS_FRAG")) {
-            if (frag[0] != '\0') write_frag_file(frag);
-        }
-
         const char* trace_on_miss = std::getenv("GBARECOMP_TRACE_ON_DISPATCH_MISS");
         if (trace_on_miss && trace_on_miss[0] != '\0') {
             bool dump = trace_on_miss[0] == '1' && trace_on_miss[1] == '\0';
