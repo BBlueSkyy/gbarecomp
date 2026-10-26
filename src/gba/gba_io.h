@@ -150,7 +150,15 @@ public:
 
     // True if (IE & IF) != 0 AND IME is set. The CPU's CPSR.I check
     // happens at the call site.
-    bool irq_pending() const;
+    // Visible to runtime_tick's per-instruction check; no separate host call.
+    bool irq_pending() const {
+        const uint16_t ie_v = uint16_t(io_[IoReg::IE]) |
+                              (uint16_t(io_[IoReg::IE + 1]) << 8);
+        const uint16_t if_v = uint16_t(io_[IoReg::IF]) |
+                              (uint16_t(io_[IoReg::IF + 1]) << 8);
+        if ((ie_v & if_v) == 0) return false;
+        return (io_[IoReg::IME] & 1u) != 0;
+    }
 
     // Raw register reads for the runtime's CPU IRQ entry path.
     uint16_t ie()      const;

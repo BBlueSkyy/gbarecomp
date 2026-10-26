@@ -11,6 +11,22 @@
 
 #include "runtime_arm_types.h"
 
+// Data-access cost shared by GbaBus and the recompiled runtime. Keeping the
+// pure table lookup visible avoids crossing GbaBus::access_cycles and
+// waits_access_cycles for every generated guest load/store. It does not
+// advance time or modify GamePak prefetch state.
+static inline uint32_t rwt_access_cycles(const RuntimeWaitTable* t,
+                                         uint32_t addr, uint8_t width,
+                                         uint32_t sequential) {
+    const uint32_t region = addr >> 24;
+    if (region > 0xFu) return 1u;
+    if (region == 0xEu || region == 0xFu)
+        return 1u + t->n16[region];
+    if (width == 4u)
+        return 1u + (sequential ? t->s32[region] : t->n32[region]);
+    return 1u + (sequential ? t->s16[region] : t->n16[region]);
+}
+
 // Wait states (beyond the base cycle) of one opcode fetch at `pc`: 16-bit for
 // THUMB, 32-bit for ARM, sequential or not. Regions above 0Fh never hold
 // code and cost nothing extra.

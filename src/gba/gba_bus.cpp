@@ -7,6 +7,7 @@
 // to serve bytes before the hash is verified.
 
 #include "gba_bus.h"
+#include "runtime_wait_model.h"
 #include <utility>
 
 #include <cstdlib>
@@ -631,7 +632,7 @@ void GbaBus::write32(uint32_t addr, uint32_t v) {
 // Control"; mGBA 1d201b22 memory.c. See gba_waitstates.h.
 uint32_t GbaBus::access_cycles(uint32_t addr, uint8_t width,
                                bool sequential) const {
-    return waits_access_cycles(*waits_, addr, width, sequential);
+    return rwt_access_cycles(waits_, addr, width, sequential ? 1u : 0u);
 }
 
 const uint8_t* GbaBus::native_code_view(uint32_t address,uint32_t size) const {

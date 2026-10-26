@@ -1005,6 +1005,11 @@ target_link_libraries(diagnostic_capture_tests PRIVATE gbarecomp_gba)
 add_test(NAME diagnostic_capture_tests_disabled COMMAND diagnostic_capture_tests --disabled)
 add_test(NAME diagnostic_capture_tests_enabled COMMAND diagnostic_capture_tests --enabled)
 
+add_executable(irq_pending_tests tests/runtime/irq_pending_test.cpp)
+target_link_libraries(irq_pending_tests PRIVATE gbarecomp_gba)
+add_test(NAME irq_pending_tests COMMAND irq_pending_tests)
+
+
 # Diagnostic replay capture/playback (docs/DIAGNOSTIC_REPLAY.md) against a
 # synthetic deterministic machine, plus the bounded background writer.
 add_executable(diagnostic_replay_tests
@@ -1077,6 +1082,14 @@ target_link_libraries(thumb_tests PRIVATE gbarecomp_armv4t)
 add_test(NAME thumb_tests COMMAND thumb_tests)
 
 add_gbarecomp_runtime_stack_test(bus_tests tests/bus/test_main.cpp)
+add_gbarecomp_runtime_stack_test(memory_timing_tests tests/runtime/memory_timing_test.cpp)
+add_executable(runtime_hotpath_bench EXCLUDE_FROM_ALL tests/performance/runtime_bench.cpp)
+target_include_directories(runtime_hotpath_bench PRIVATE src/debug)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(runtime_hotpath_bench PRIVATE -O1 -g0)
+endif()
+target_link_gbarecomp_runtime_stack(runtime_hotpath_bench)
+
 add_gbarecomp_runtime_stack_test(bridge_iret_tests tests/runtime/bridge_iret_test.cpp)
 add_gbarecomp_runtime_stack_test(high_resolution_tests tests/ppu/high_resolution_test.cpp)
 add_gbarecomp_runtime_stack_test(vertical_obj_tests tests/ppu/vertical_obj_test.cpp)
