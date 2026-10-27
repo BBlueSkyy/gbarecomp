@@ -2597,7 +2597,7 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
             b->special_not_ready_streak = 0;
             b->special_ready_streak = std::min(4u, b->special_ready_streak + 1u);
             if (b->special_ready_streak >= 3u) b->special_ready = true;
-        } else if (fraction < 0.85f) {
+        } else if (fraction < 0.94f) {
             b->special_ready_streak = 0;
             b->special_not_ready_streak =
                 std::min(4u, b->special_not_ready_streak + 1u);
