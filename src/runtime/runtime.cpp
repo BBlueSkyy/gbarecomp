@@ -3120,7 +3120,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                     const auto& item = pc_sites[rank];
                     if (item.samples) {
                         std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
-                                      "PC%u %08X %c | %llu samples /128 | estimated %.1f M ins",
+                                      "PC%u %08X %c | %llu samples /~128 | estimated %.1f M ins",
                                       rank + 1, item.pc, item.thumb ? 'T' : 'A',
                                       static_cast<unsigned long long>(item.samples),
                                       item.samples * 128.0 / 1e6);
@@ -3139,7 +3139,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                               runtime_perf_bridge_active_pc(),
                               gbarecomp::self_heal_distinct_misses());
                 std::snprintf(lines[12], sizeof(lines[12]),
-                              "SWI/IRQ inclusive; PC samples every 128 interp steps");
+                              "SWI/IRQ inclusive; PC samples ~1/128 interp steps");
                 hud_start_ns = t5;
                 hud_frames = 0;
                 hud_guest_us = hud_render_us = hud_present_us = 0;
