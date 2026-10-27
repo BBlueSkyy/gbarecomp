@@ -1,0 +1,343 @@
+{
+  "pairs": 12,
+  "summary": {
+    "plain": {
+      "median_ns": {
+        "baseline": 2722522.5,
+        "candidate": 552599.0
+      },
+      "interpreted_instructions": {
+        "baseline": [
+          30002
+        ],
+        "candidate": [
+          1
+        ]
+      },
+      "matching_state": [
+        "50007",
+        "03002000",
+        "10000",
+        "0",
+        "0",
+        "6000001f",
+        "05a1ba3b57a5fce1",
+        "545066"
+      ]
+    },
+    "pending_irq": {
+      "median_ns": {
+        "baseline": 2489710.0,
+        "candidate": 902733.0
+      },
+      "interpreted_instructions": {
+        "baseline": [
+          30006
+        ],
+        "candidate": [
+          5
+        ]
+      },
+      "matching_state": [
+        "50016",
+        "03002000",
+        "10000",
+        "0",
+        "0",
+        "6000001f",
+        "9f547cc01820372e",
+        "545066"
+      ]
+    }
+  },
+  "raw": [
+    {
+      "mode": "plain",
+      "pair": 0,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=5690505 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 0,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=557608 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 1,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=494970 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 1,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=4249200 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 2,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2219603 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 2,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=513293 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 3,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=535211 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 3,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=3143467 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 4,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=4088900 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 4,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=598144 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 5,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=1001747 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 5,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2345537 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 6,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2387989 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 6,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=1060110 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 7,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=485945 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 7,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2543995 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 8,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2228425 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 8,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=638409 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 9,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=547590 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 9,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2864697 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 10,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=2580348 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 10,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=603058 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 11,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=1\nelapsed_ns=544530 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "plain",
+      "pair": 11,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30002\nelapsed_ns=3582085 cycles=50007 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=05a1ba3b57a5fce1 bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 0,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2706378 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 0,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=1118969 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 1,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=560397 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 1,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2365383 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 2,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2533003 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 2,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=1557020 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 3,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=985948 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 3,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2667339 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 4,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2095714 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 4,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=3069950 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 5,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=1179273 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 5,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=3648855 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 6,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=5681069 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 6,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=758143 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 7,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=547360 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 7,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2446417 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 8,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2131143 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 8,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=819518 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 9,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=648319 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 9,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2135460 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 10,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=2322744 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 10,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=522815 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 11,
+      "variant": "candidate",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=1 interpreted=5\nelapsed_ns=1367007 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    },
+    {
+      "mode": "pending_irq",
+      "pair": 11,
+      "variant": "baseline",
+      "stdout": "pc=03002000 r0=10000 call_depth=0 native_calls=0 interpreted=30006\nelapsed_ns=3390838 cycles=50016 final=03002000 r0=10000 r1=0 depth=0 cpsr=6000001f\nstate_fnv1a=9f547cc01820372e bytes=545066\n"
+    }
+  ]
+}

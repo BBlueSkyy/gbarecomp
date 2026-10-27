@@ -705,6 +705,14 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
                          entry_pc, stop_pc);
         }
     }
+    // A missing SWI vector is an exception boundary, not the guest BL frame
+    // that happened to be open when the SWI executed. Its SVC exception return
+    // must hand the continuation back to the native caller without consuming
+    // that frame. Explicit forced-stop validation retains its subtree contract.
+    const bool swi_vector = forced_stop_pc == 0u && entry_pc == 0x00000008u &&
+                            (g_cpu.cpsr & 0x1Fu) == 0x13u;
+    bool swi_returned = false;
+
     // IRQ-continuation mode: bridging a dispatch miss while an IRQ handler is in
     // progress (runtime_irq() re-dispatched a mid-handler PC after an in-handler
     // SWI unwound). The normal stop contract (LR fallback / call-stack-top) is
@@ -927,6 +935,12 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
             }
         }
 
+        if (swi_vector && r == armv4t::Interpreter::Result::ExceptionReturn &&
+            old_mode == 0x13u) {
+            swi_returned = true;
+            break;
+        }
+
         if (!irq_cont && (cpu.R[15] & ~1u) == stop_pc) break;
 
         // Return into an outer frame (see entry_floor above). Only a transfer
@@ -1041,7 +1055,7 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
         // recompiled BL site sees R15 != its return address and cascades the
         // host frames up to the frame that owns this PC.
         runtime_call_stack_restore(entry_stack.data(), unwound_depth);
-    } else if (!top_level && !irq_cont) {
+    } else if (!top_level && !irq_cont && !swi_returned) {
         // Restore the entry stack minus exactly the one frame the missed
         // subroutine's return idiom (`bx lr` / `pop {pc}`) would have popped
         // via runtime_call_should_return.
