@@ -428,6 +428,10 @@ void HostWindow::set_resize_driven_view(bool v){if(impl_)backend(impl_)->resize=
 bool HostWindow::assist_tools_enabled()const{return impl_&&backend(impl_)->assist;}
 int HostWindow::fast_forward_multiplier()const{return impl_?backend(impl_)->turbo:4;}
 
+// The browser has a separate HTML canvas/controller presentation; Android
+// title-owned 4-button artwork and RGB meter probes are not used there.
+void HostWindow::configure_mobile_action_hud(bool, SpecialMeterProbe) {}
+
 // ---- touch (touch_input.h) -------------------------------------------------
 void HostWindow::configure_touch(bool policy,std::uint32_t claims,int pad_default,bool emulate) {
     if(!impl_)return;

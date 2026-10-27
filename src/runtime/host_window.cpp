@@ -19,6 +19,7 @@
 
 #include "color_lut.h"
 #include "host_overlay.h"
+#include "mobile_touch_skin.h"
 #include "presentation_layout.h"
 #include "touch_input.h"
 #if defined(GBARECOMP_RUNTIME_UI)
@@ -376,6 +377,18 @@ struct Backend {
     // GBARECOMP_TOUCH_CONTROLS) and its player-controlled visibility.
     bool touch_controls = false;
     bool pad_visible = false;
+    bool mobile_action_hud = false;
+    HostWindow::SpecialMeterProbe special_meter_probe = nullptr;
+    bool special_ready = false;
+    unsigned special_ready_streak = 0;
+    unsigned special_not_ready_streak = 0;
+    int pad_scale_percent = 100; // controls and hitboxes scale together
+    bool pad_scale_saved = false;
+    int scanline_effect = 0;     // off / subtle / strong
+    int color_profile = 0;       // raw / backlit / classic / frontlit / unlit
+    bool display_preset_saved = false;
+    SDL_Texture* scanline_texture = nullptr;
+    int scanline_texture_height = 0;
     bool pad_choice_saved = false;
     // Player-placed pad toggle: centre as a fraction of the safe area, so it
     // keeps its place across rotation. Unset = bottom-right corner.
@@ -638,6 +651,7 @@ struct PadLayout {
     PadCircle dpad;       // r = arm length (centre to tip)
     float dpad_thick = 0;
     PadCircle a, b;
+    PadCircle pole, ki; // only used in title-specific mobile layout
     PadRect l, r, select, start;
     PadRect toggle;
 };
@@ -668,11 +682,12 @@ PadLayout compute_pad_layout(const Backend* b) {
     // scenes), shrink to fit it rather than overlaying the image.
     constexpr float kBandNeed = 50.0f;              // mm at full size
     const float band_avail = (bottom - static_cast<float>(g.y + g.height)) / mm;
-    float s = 1.0f;
-    if (dw < dh) {
-        s = std::clamp(avail_w / need_w, 0.65f, 1.0f);
-        if (band_avail >= kBandNeed * 0.65f) s = std::min(s, band_avail / kBandNeed);
-    }
+    float s = std::clamp(static_cast<float>(b->pad_scale_percent) / 100.0f,
+                         0.8f, 1.2f);
+    // Keep both sides separated even when enlarged on a narrower display.
+    s = std::min(s, avail_w / need_w);
+    if (dw < dh && band_avail >= kBandNeed * 0.65f)
+        s = std::min(s, band_avail / kBandNeed);
     const float margin = kMargin * s * mm;
     const float arm = kArm * s * mm;
     const float button_r = kButtonR * s * mm;
@@ -724,7 +739,34 @@ PadLayout compute_pad_layout(const Backend* b) {
         const float mid = (left + right) * 0.5f;
         p.select = {mid - pill_w - 3.0f * mm, pills_y, pill_w, pill_h};
         p.start = {mid + 3.0f * mm, pills_y, pill_w, pill_h};
-    }    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
+    }
+    if (b->mobile_action_hud && dw >= dh) {
+        // Four independent physical buttons, matching the game's B/A/L/R.
+        // Side-rail preference avoids covering the gameplay when possible.
+        // Top: R (Ki). Middle: B (punch). Bottom: L (staff).
+        // A (jump) sits to the left of L, clear of the three stacked buttons.
+        const float rail = std::max(0.0f,
+            right - static_cast<float>(g.x + g.width));
+        const float rail_min = 2.0f * button_r + 2.0f * margin;
+        const float x = rail >= rail_min
+            ? right - rail * 0.5f : right - margin - button_r;
+        const float vertical = bottom - top;
+        const float min_gap = 2.3f * button_r;
+        p.ki = {x, top + std::max(margin + button_r,
+                                 vertical * 0.19f), button_r};
+        p.b = {x, top + std::max(margin + button_r + min_gap,
+                                vertical * 0.43f), button_r};
+        p.pole = {x, std::min(bottom - margin - button_r,
+                             std::max(p.b.y + min_gap,
+                                      top + vertical * 0.71f)), button_r};
+        p.a = {x - 2.55f * button_r,
+               std::min(bottom - margin - button_r,
+                        p.pole.y + button_r * 0.12f), button_r * 0.90f};
+        // Shoulder keys are the two round special buttons, never duplicates.
+        p.l = {};
+        p.r = {};
+    }
+    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
     float cx = right - edge - tw * 0.5f;
     float cy = bottom - edge - th * 0.5f;
     if (b->toggle_pos_saved) {
@@ -743,14 +785,15 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     const float dy = y - p.dpad.y;
     const float reach = p.dpad.r * 1.35f;
     if (std::abs(dx) <= reach && std::abs(dy) <= reach) {
+        // Two-axis input with a small common dead zone. Allow diagonals
+        // rather than snapping to whichever axis has the larger magnitude.
+        // The ratio threshold avoids jitter when dragging nearly horizontally.
         const float dead = p.dpad.r * 0.18f;
-        if (std::abs(dx) > std::abs(dy)) {
-            if (dx > dead) buttons |= 1u << 4;   // Right
-            if (dx < -dead) buttons |= 1u << 5;  // Left
-        } else {
-            if (dy < -dead) buttons |= 1u << 6;  // Up
-            if (dy > dead) buttons |= 1u << 7;   // Down
-        }
+        const float ax = std::abs(dx), ay = std::abs(dy);
+        if (ax > dead && ax >= ay * 0.45f)
+            buttons |= dx > 0 ? (1u << 4) : (1u << 5);
+        if (ay > dead && ay >= ax * 0.45f)
+            buttons |= dy > 0 ? (1u << 7) : (1u << 6);
     }
     auto in_circle = [x, y](const PadCircle& c, float scale) {
         const float ex = x - c.x, ey = y - c.y;
@@ -762,8 +805,13 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     const float pad = 2.0f * mm;
     if (p.select.contains(x, y, pad)) buttons |= 1u << 2;
     if (p.start.contains(x, y, pad)) buttons |= 1u << 3;
-    if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
-    if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    if (p.ki.r > 0.0f) {
+        if (in_circle(p.ki, 1.08f)) buttons |= 1u << 8;
+        if (in_circle(p.pole, 1.08f)) buttons |= 1u << 9;
+    } else {
+        if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
+        if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    }
     return buttons;
 }
 
@@ -1044,6 +1092,34 @@ void draw_touch_pad(Backend* b, HostOverlay& ov) {
     const float line = std::max(2.0f, 0.45f * mm);
     auto on = [held](int bit) { return (held & (1u << bit)) != 0; };
 
+    // The approved mobile-game skin is title-owned: glossy illustrated
+    // actions, glass D-pad, gentle blue ready rings. Keep the original input
+    // geometry and multi-finger controls unchanged for all other games.
+    if (b->mobile_action_hud && p.ki.r > 0.0f) {
+        const mobile_skin::Layout skin{
+            {p.dpad.x,p.dpad.y,p.dpad.r},
+            {p.a.x,p.a.y,p.a.r}, {p.b.x,p.b.y,p.b.r},
+            {p.ki.x,p.ki.y,p.ki.r}, {p.pole.x,p.pole.y,p.pole.r},
+            mm
+        };
+        mobile_skin::draw(ov,skin,held,b->special_ready,ov.host_ms());
+        auto small_pill = [&](const PadRect& r,int bit,const char* txt) {
+            const bool down=on(bit);
+            ov.fill_rect(r.x,r.y,r.w,r.h,r.h*0.50f,
+                down ? OverlayColor{65,145,202,197}
+                     : OverlayColor{26,37,52,156}, S);
+            ov.stroke_rect(r.x,r.y,r.w,r.h,r.h*0.50f,
+                std::max(1.4f,mm*.20f), {204,226,245,205}, S);
+            if(ov.text_supported())
+                ov.text(r.x+r.w*.50f,r.y+r.h*.18f,
+                    std::min(r.h*.60f,mm*3.2f),
+                    {249,252,255,235},txt,OverlayAlign::Center,S);
+        };
+        small_pill(p.select,2,"SELECT");
+        small_pill(p.start,3,"START");
+        return;
+    }
+
     // D-pad cross: backing + outline per arm, pressed arm highlighted.
     const float arm = p.dpad.r, t = p.dpad_thick, cx = p.dpad.x, cy = p.dpad.y;
     ov.fill_rect(cx - t * 0.5f, cy - arm, t, arm * 2.0f, t * 0.2f, backing, S);
@@ -1141,7 +1217,8 @@ void save_touch_config(const Backend* b) {
             const bool header = s != std::string::npos && line[s] == '[';
             if (header)
                 in_section = line.compare(s, 7, "[Touch]") == 0 ||
-                             line.compare(s, 7, "[Audio]") == 0;
+                             line.compare(s, 7, "[Audio]") == 0 ||
+                             line.compare(s, 14, "[VideoEffects]") == 0;
             if (in_section) continue;
             kept.push_back(line);
         }
@@ -1154,6 +1231,8 @@ void save_touch_config(const Backend* b) {
     f << "[Touch]\n";
     if (b->pad_choice_saved)
         f << "pad_visible = " << (b->pad_visible ? 1 : 0) << "\n";
+    if (b->pad_scale_saved)
+        f << "pad_scale = " << b->pad_scale_percent << "\n";
     if (b->toggle_pos_saved) {
         f << "toggle_x = " << b->toggle_fx << "\n";
         f << "toggle_y = " << b->toggle_fy << "\n";
@@ -1161,6 +1240,11 @@ void save_touch_config(const Backend* b) {
     if (b->audio_enhanced_saved) {
         f << "\n[Audio]\n";
         f << "enhanced = " << (b->audio_enhanced ? 1 : 0) << "\n";
+    }
+    if (b->display_preset_saved) {
+        f << "\n[VideoEffects]\n";
+        f << "color_profile = " << b->color_profile << "\n";
+        f << "scanlines = " << b->scanline_effect << "\n";
     }
 }
 
@@ -1965,7 +2049,15 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
         }
     }
 
-    b->color_lut = std::make_unique<runtime::ColorLut>(resolve_color_settings(screen));
+    const auto initial_screen = resolve_color_settings(screen);
+    switch (initial_screen.screen) {
+        case runtime::ScreenKind::Backlit:  b->color_profile = 1; break;
+        case runtime::ScreenKind::Classic:  b->color_profile = 2; break;
+        case runtime::ScreenKind::Frontlit: b->color_profile = 3; break;
+        case runtime::ScreenKind::Unlit:    b->color_profile = 4; break;
+        default: b->color_profile = 0; break;
+    }
+    b->color_lut = std::make_unique<runtime::ColorLut>(initial_screen);
     if (!b->color_lut->is_passthrough())
         b->graded_fb.resize(static_cast<std::size_t>(base_w) * base_h * 3);
 
@@ -2282,6 +2374,7 @@ void HostWindow::close() {
     runtime_imgui_shutdown(b);
 #endif
     destroy_sharp_texture(b);
+    if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
     if (b->texture)   SDL_DestroyTexture(b->texture);
     if (b->renderer)  SDL_DestroyRenderer(b->renderer);
     if (b->window)    SDL_DestroyWindow(b->window);
@@ -2370,6 +2463,16 @@ bool HostWindow::drawable_size(int* width, int* height) const {
            *width > 0 && *height > 0;
 }
 
+void HostWindow::configure_mobile_action_hud(
+        bool enable, SpecialMeterProbe probe) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    b->mobile_action_hud = enable;
+    b->special_meter_probe = enable ? probe : nullptr;
+    b->special_ready = false;
+    b->special_ready_streak = b->special_not_ready_streak = 0;
+}
+
 void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
 
 void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
@@ -2425,6 +2528,26 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
         rgb888 = b->presentation_upload.data();
     }
     note_present_for_health(b);
+    if (b->mobile_action_hud && b->special_meter_probe) {
+        // Read the raw visible guest HUD only. No writes, no CPU cycle changes,
+        // and never sample color-graded or filter-generated host pixels.
+        const float fraction = b->special_meter_probe(
+            rgb888, static_cast<unsigned>(texture_w),
+            static_cast<unsigned>(texture_h));
+        if (fraction < 0.0f) {
+            b->special_ready = false;
+            b->special_ready_streak = b->special_not_ready_streak = 0;
+        } else if (fraction >= 0.96f) {
+            b->special_not_ready_streak = 0;
+            b->special_ready_streak = std::min(4u, b->special_ready_streak + 1u);
+            if (b->special_ready_streak >= 3u) b->special_ready = true;
+        } else if (fraction < 0.94f) {
+            b->special_ready_streak = 0;
+            b->special_not_ready_streak =
+                std::min(4u, b->special_not_ready_streak + 1u);
+            if (b->special_not_ready_streak >= 3u) b->special_ready = false;
+        }
+    }
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
     if (b->color_lut && !b->color_lut->is_passthrough()) {
@@ -2509,6 +2632,33 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
 #if defined(__ANDROID__)
     const SDL_Rect destination{layout.x, layout.y, layout.width, layout.height};
     SDL_RenderCopy(b->renderer, b->texture, nullptr, &destination);
+    // Shader-like scanlines: one blended GPU draw, no CPU per-pixel pass.
+    // A 1px-wide pattern at the guest's vertical resolution is cached and
+    // stretched only over the game image (not the touch controls or rails).
+    if (b->scanline_effect && texture_h > 0) {
+        if (!b->scanline_texture ||
+            b->scanline_texture_height != texture_h) {
+            if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
+            b->scanline_texture = SDL_CreateTexture(b->renderer,
+                SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, 1, texture_h);
+            b->scanline_texture_height = b->scanline_texture ? texture_h : 0;
+            if (b->scanline_texture) {
+                const std::uint32_t alpha =
+                    b->scanline_effect == 1 ? 38u : 78u;
+                std::vector<std::uint32_t> pattern(static_cast<size_t>(texture_h));
+                for (int y = 0; y < texture_h; ++y)
+                    pattern[static_cast<size_t>(y)] = (y & 1) ? (alpha << 24) : 0u;
+                SDL_UpdateTexture(b->scanline_texture, nullptr, pattern.data(),
+                                  static_cast<int>(sizeof(std::uint32_t)));
+                SDL_SetTextureBlendMode(b->scanline_texture, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+                SDL_SetTextureScaleMode(b->scanline_texture, SDL_ScaleModeNearest);
+#endif
+            }
+        }
+        if (b->scanline_texture)
+            SDL_RenderCopy(b->renderer, b->scanline_texture, nullptr, &destination);
+    }
 #else
     if (!b->expanded_view && !b->resize_driven_view) {
         SDL_RenderCopy(b->renderer, b->texture, nullptr, nullptr);
@@ -2723,6 +2873,55 @@ bool HostWindow::linear_filter() const {
     return open_ && impl_ && static_cast<const Backend*>(impl_)->linear_filter;
 }
 
+void HostWindow::set_scanline_effect(int preset) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    preset = std::clamp(preset, 0, 2);
+    if (b->scanline_effect == preset) return;
+    b->scanline_effect = preset;
+    if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
+    b->scanline_texture = nullptr;
+    b->scanline_texture_height = 0;
+    b->display_preset_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::scanline_effect() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->scanline_effect : 0;
+}
+void HostWindow::set_color_profile(int preset) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    preset = std::clamp(preset, 0, 4);
+    if (b->color_profile == preset) return;
+    runtime::ColorSettings settings{};
+    switch (preset) {
+        case 1: settings.screen = runtime::ScreenKind::Backlit; break;
+        case 2: settings.screen = runtime::ScreenKind::Classic; break;
+        case 3: settings.screen = runtime::ScreenKind::Frontlit; break;
+        case 4: settings.screen = runtime::ScreenKind::Unlit; break;
+        default: break;
+    }
+    b->color_lut = std::make_unique<runtime::ColorLut>(settings);
+    b->color_profile = preset;
+    b->display_preset_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::color_profile() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->color_profile : 0;
+}
+void HostWindow::set_touch_pad_scale(int percent) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    percent = std::clamp(percent, 80, 120);
+    if (b->pad_scale_percent == percent) return;
+    b->pad_scale_percent = percent;
+    b->pad_scale_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::touch_pad_scale() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->pad_scale_percent : 100;
+}
+
 void HostWindow::set_audio_enabled(bool enabled) {
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
@@ -2811,6 +3010,12 @@ void HostWindow::set_touch_config_dir(const char* dir) {
         if (SDL_strcasecmp(key, "pad_visible") == 0) {
             b->pad_visible = b->touch_controls && std::atoi(val) != 0;
             b->pad_choice_saved = true;
+        } else if (SDL_strcasecmp(key, "pad_scale") == 0) {
+            const int percent = std::atoi(val);
+            if (percent >= 80 && percent <= 120) {
+                b->pad_scale_percent = percent;
+                b->pad_scale_saved = true;
+            }
         } else if (SDL_strcasecmp(key, "toggle_x") == 0) {
             b->toggle_fx = std::clamp(static_cast<float>(std::atof(val)), 0.0f, 1.0f);
             b->toggle_pos_saved = true;
@@ -2826,6 +3031,30 @@ void HostWindow::set_touch_config_dir(const char* dir) {
             b->audio_enhanced_saved = true;
         }
     });
+    ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "VideoEffects",
+                     [b](const char* key, const char* val) {
+        const int value = std::atoi(val);
+        if (SDL_strcasecmp(key, "color_profile") == 0 &&
+            value >= 0 && value <= 4) {
+            b->color_profile = value;
+            b->display_preset_saved = true;
+        } else if (SDL_strcasecmp(key, "scanlines") == 0 &&
+                   value >= 0 && value <= 2) {
+            b->scanline_effect = value;
+            b->display_preset_saved = true;
+        }
+    });
+    if (b->display_preset_saved) {
+        runtime::ColorSettings settings{};
+        switch (b->color_profile) {
+            case 1: settings.screen = runtime::ScreenKind::Backlit; break;
+            case 2: settings.screen = runtime::ScreenKind::Classic; break;
+            case 3: settings.screen = runtime::ScreenKind::Frontlit; break;
+            case 4: settings.screen = runtime::ScreenKind::Unlit; break;
+            default: break;
+        }
+        b->color_lut = std::make_unique<runtime::ColorLut>(settings);
+    }
 }
 
 bool HostWindow::saved_audio_enhanced(bool& enabled) const {
@@ -3381,6 +3610,13 @@ int  HostWindow::volume() const { return 100; }
 int  HostWindow::window_scale() const { return 1; }
 void HostWindow::set_linear_filter(bool /*enabled*/) {}
 bool HostWindow::linear_filter() const { return false; }
+void HostWindow::set_scanline_effect(int) {}
+int HostWindow::scanline_effect() const { return 0; }
+void HostWindow::set_color_profile(int) {}
+int HostWindow::color_profile() const { return 0; }
+void HostWindow::configure_mobile_action_hud(bool, SpecialMeterProbe) {}
+void HostWindow::set_touch_pad_scale(int) {}
+int HostWindow::touch_pad_scale() const { return 100; }
 bool HostWindow::saved_audio_enhanced(bool& /*enabled*/) const { return false; }
 void HostWindow::save_audio_enhanced(bool /*enabled*/) {}
 void HostWindow::set_audio_enabled(bool /*enabled*/) {}
