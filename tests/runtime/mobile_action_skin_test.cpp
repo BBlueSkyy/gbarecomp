@@ -10,7 +10,8 @@
 using namespace gbarecomp;
 struct Recorder final : HostOverlay {
     int circles = 0, rounded = 0, lines = 0;
-    int bright_blue = 0, blue_ready = 0;
+    int bright_blue = 0;
+    int icon_spans = 0;
     int drawable_width() const override { return 1920; }
     int drawable_height() const override { return 1080; }
     PresentationLayout game_rect() const override { return {}; }
@@ -24,7 +25,14 @@ struct Recorder final : HostOverlay {
     }
     void line(float,float,float,float,float,OverlayColor,OverlaySpace) override { ++lines; }
     void polyline(const OverlayPoint*,std::size_t,float,OverlayColor,OverlaySpace) override {}
-    void fill_rect(float,float,float,float,float,OverlayColor,OverlaySpace) override { ++rounded; }
+    void fill_rect(float,float,float,float,float,OverlayColor c,OverlaySpace) override {
+        ++rounded;
+        if ((c.r == 255 && c.g == 227 && c.b == 174) ||
+            (c.r == 255 && c.g == 181 && c.b == 117) ||
+            (c.r == 224 && c.g == 255 && c.b == 247) ||
+            (c.r == 213 && c.g == 255 && c.b == 238))
+            ++icon_spans;
+    }
     void stroke_rect(float,float,float,float,float,float,OverlayColor,OverlaySpace) override {}
     void fill_circle(float,float,float,OverlayColor,OverlaySpace) override { ++circles; }
     void stroke_circle(float,float,float,float,OverlayColor c,OverlaySpace) override {
@@ -45,9 +53,10 @@ int main() {
     mobile_skin::draw(idle,layout,0,false,1234);
     mobile_skin::draw(ready,layout,0,true,1234);
     mobile_skin::draw(pressed,layout,(1u<<0)|(1u<<8),true,1634);
-    assert(idle.circles > 5 && idle.rounded > 4 && idle.lines > 15);
+    assert(idle.circles > 5 && idle.rounded > 200 && idle.lines > 15);
+    assert(idle.icon_spans > 150); // traced fist + leaping figure, not generic glyphs
     assert(idle.bright_blue == 0);
     assert(ready.bright_blue == 2); // both Power Pole and Ki only
     assert(pressed.bright_blue == 2);
-    std::puts("mobile action HUD: 4 icons, idle/ready outlines, D-pad geometry OK");
+    std::puts("mobile action HUD: traced fist/jump masks, four icons, charge rings, D-pad OK");
 }
