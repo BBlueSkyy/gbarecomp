@@ -28,7 +28,7 @@ struct Recorder final : HostOverlay {
     void stroke_rect(float,float,float,float,float,float,OverlayColor,OverlaySpace) override {}
     void fill_circle(float,float,float,OverlayColor,OverlaySpace) override { ++circles; }
     void stroke_circle(float,float,float,float,OverlayColor c,OverlaySpace) override {
-        if(c.r == 80 && c.g == 200 && c.b == 255) ++bright_blue;
+        if(c.r == 65 && c.g == 194 && c.b == 255) ++bright_blue;
     }
     void arc(float,float,float,float,float,float,OverlayColor,OverlaySpace) override {}
     bool text_supported() const override { return false; }
