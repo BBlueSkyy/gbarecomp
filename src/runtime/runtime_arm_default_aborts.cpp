@@ -33,6 +33,7 @@
 #include "overlay_loader.h"
 #include "arm_cpu_bridge.h"
 #include "runtime_bus_bridge.h"
+#include "runtime_perf_hot.h"
 
 #include "cpu_state.h"
 #include "interpreter.h"
@@ -95,7 +96,11 @@ struct PerfBridgeScope {
     using Clock = std::chrono::steady_clock;
     const Clock::time_point started = Clock::now();
     const bool outer;
-    explicit PerfBridgeScope(std::uint32_t pc);
+    std::uint32_t pc = 0;
+    bool thumb = false;
+    std::uint64_t insns_at_entry = 0;
+    std::uint32_t previous_pc = 0;
+    explicit PerfBridgeScope(std::uint32_t pc, bool thumb);
     ~PerfBridgeScope();
 };
 #endif
@@ -224,20 +229,63 @@ extern "C" unsigned long long g_perf_ram_bridge_calls = 0;
 extern "C" unsigned long long g_perf_bridge_insns_live = 0;
 extern "C" unsigned g_perf_bridge_active(void) { return g_perf_bridge_depth != 0; }
 namespace {
-PerfBridgeScope::PerfBridgeScope(std::uint32_t pc)
-    : outer(++g_perf_bridge_depth == 1) {
+struct PerfSiteCounters {
+    std::uint64_t elapsed_ns = 0, instructions = 0, calls = 0;
+};
+// Host-side diagnostic aggregate only; ~210 calls/s in the observed gameplay.
+// No std::map lookup occurs on the interpreted instruction hot loop.
+std::map<std::uint64_t, PerfSiteCounters> g_perf_sites;
+std::uint32_t g_perf_current_pc = 0;
+PerfBridgeScope::PerfBridgeScope(std::uint32_t entry, bool is_thumb)
+    : outer(++g_perf_bridge_depth == 1), pc(entry), thumb(is_thumb),
+      insns_at_entry(g_perf_bridge_insns_live),
+      previous_pc(g_perf_current_pc) {
+    g_perf_current_pc = entry;
     ++g_perf_bridge_calls;
     if ((pc >> 24) == 2u || (pc >> 24) == 3u)
         ++g_perf_ram_bridge_calls;
 }
 PerfBridgeScope::~PerfBridgeScope() {
-    --g_perf_bridge_depth;
-    if (!outer) return;
-    g_perf_bridge_ns += static_cast<unsigned long long>(
+    const auto ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             Clock::now() - started).count());
+    // Inclusive measurements per entry; nested sites may overlap.
+    const auto key = (std::uint64_t(pc) << 1) | std::uint64_t(thumb);
+    auto& site = g_perf_sites[key];
+    site.elapsed_ns += ns;
+    site.instructions += g_perf_bridge_insns_live - insns_at_entry;
+    ++site.calls;
+    g_perf_current_pc = previous_pc;
+    --g_perf_bridge_depth;
+    if (outer) g_perf_bridge_ns += ns;
 }
 }  // namespace
+extern "C" std::uint32_t runtime_perf_bridge_active_pc() {
+    return g_perf_current_pc;
+}
+extern "C" void runtime_perf_bridge_top_sample(RuntimePerfHotBridge output[3]) {
+    for (unsigned i = 0; i < 3; ++i) output[i] = {};
+    for (auto& [key, site] : g_perf_sites) {
+        if (site.calls == 0) continue;
+        RuntimePerfHotBridge item{};
+        item.pc = static_cast<std::uint32_t>(key >> 1);
+        item.thumb = static_cast<std::uint32_t>(key & 1u);
+        item.elapsed_ns = site.elapsed_ns;
+        item.instructions = site.instructions;
+        item.calls = site.calls;
+        for (unsigned index = 0; index < 3; ++index) {
+            if (item.elapsed_ns > output[index].elapsed_ns ||
+                (item.elapsed_ns == output[index].elapsed_ns &&
+                 item.instructions > output[index].instructions)) {
+                for (unsigned j = 2; j > index; --j) output[j] = output[j-1];
+                output[index] = item;
+                break;
+            }
+        }
+        site = {}; // reset per-second diagnostic window, preserve identity
+    }
+}
+#endif
 #endif
 
 namespace gbarecomp {
@@ -688,7 +736,7 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
     using gbarecomp::active_bus;
     reject_strict_interpreter(entry_pc,"bridge");
 #if defined(GBARECOMP_PERF_HUD)
-    PerfBridgeScope perf_bridge_scope(entry_pc);
+    PerfBridgeScope perf_bridge_scope(entry_pc, entry_thumb);
 #endif
 
     // Instruction budget: 0 → the default 200M abort-on-runaway (the on-miss
