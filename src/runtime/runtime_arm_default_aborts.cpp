@@ -245,7 +245,7 @@ std::uint32_t g_perf_last_swi_number = 0xFFFFFFFFu;
 std::uint32_t g_perf_last_swi_callsite = 0;
 bool g_perf_last_swi_thumb = false;
 
-// Bounded, hash-indexed sampling once every 128 interpreted instructions.
+// Bounded, hash-indexed sampling about every 128 interpreted instructions.
 // No allocation, timers, map lookups or sorting in the per-step loop.
 constexpr std::size_t kPcSamplesSize = 4096;
 struct PcBucket {
