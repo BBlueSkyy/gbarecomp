@@ -118,6 +118,8 @@ extern "C" unsigned long long g_prof_scanline_ns;
 extern "C" unsigned long long g_perf_bridge_ns;
 extern "C" unsigned long long g_perf_bridge_calls;
 extern "C" unsigned long long g_perf_ram_bridge_calls;
+extern "C" unsigned long long g_perf_bridge_insns_live;
+extern "C" unsigned g_perf_bridge_active(void);
 #endif
 
 namespace {
@@ -3037,7 +3039,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 hud_start_ns = t5;
                 hud_prev_scan_ns = g_prof_scanline_ns;
                 hud_prev_bridge_ns = g_perf_bridge_ns;
-                hud_prev_interp = gbarecomp::self_heal_interpreted_insns();
+                hud_prev_interp = g_perf_bridge_insns_live;
                 hud_prev_bridges = g_perf_bridge_calls;
                 hud_prev_ram = g_perf_ram_bridge_calls;
                 hud_prev_cycles = g_runtime_cycles;
@@ -3056,7 +3058,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 const double ms_per_ns = 0.000001 / static_cast<double>(hud_frames);
                 const double elapsed_s = static_cast<double>(elapsed_ns) / 1e9;
                 const double fps = static_cast<double>(hud_frames) / elapsed_s;
-                const uint64_t interp = gbarecomp::self_heal_interpreted_insns();
+                const uint64_t interp = g_perf_bridge_insns_live;
                 const uint64_t bridges = g_perf_bridge_calls;
                 const uint64_t ram = g_perf_ram_bridge_calls;
                 const uint64_t scan_ns = g_prof_scanline_ns;
@@ -3073,12 +3075,13 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                               hud_guest_us * ms_per_us,
                               (hud_render_us + hud_present_us) * ms_per_us);
                 std::snprintf(lines[2], sizeof(lines[2]),
-                              "BRIDGE %.1f ms/frame  |  %llu calls/s",
+                              "BRIDGE DONE %.1f ms/frame | %llu calls/s %s",
                               (bridge_ns - hud_prev_bridge_ns) * ms_per_ns,
                               static_cast<unsigned long long>(
-                                  (bridges - hud_prev_bridges) / elapsed_s));
+                                  (bridges - hud_prev_bridges) / elapsed_s),
+                              g_perf_bridge_active() ? "| ACTIVE" : "");
                 std::snprintf(lines[3], sizeof(lines[3]),
-                              "INTERP %llu instructions/s  |  RAM BRIDGE %llu/s",
+                              "BRIDGED %llu instr/s  |  RAM BRIDGE %llu/s",
                               static_cast<unsigned long long>(
                                   (interp - hud_prev_interp) / elapsed_s),
                               static_cast<unsigned long long>(
