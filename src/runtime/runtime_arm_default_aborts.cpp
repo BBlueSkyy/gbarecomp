@@ -286,7 +286,6 @@ extern "C" void runtime_perf_bridge_top_sample(RuntimePerfHotBridge output[3]) {
     }
 }
 #endif
-#endif
 
 namespace gbarecomp {
 
