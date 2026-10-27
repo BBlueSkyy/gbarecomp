@@ -130,3 +130,36 @@ inaccurate, adjust only the game-owned visual probe after calibration. Do not
 change guest memory, invent RAM offsets, or claim a performance improvement.
 
 Branch and both PRs remain Draft with no merge or automated builds.
+
+## Punch and jump: final user-supplied icon references
+
+The latest owner feedback explicitly selects two **close-up reference images**
+for the red punch and green jump controls. The previous procedural
+`fist_icon()` and `jump_icon()` only approximated them with straight
+rectangles and connected line segments. They have been replaced by compact
+64×64 1-bit **reference-traced silhouettes** embedded in
+`src/runtime/mobile_reference_icons.h` (64-bit rows for punch and jump).
+The raster masks derive from the two images supplied by the owner; there
+is no ROM/BIOS content, network image request or runtime asset loader.
+A horizontal-run renderer batches contiguous foreground mask pixels into
+one HostOverlay rectangle per run instead of drawing each pixel. The fist
+uses a warm cream/orange gradient; jump uses pale mint/white and a solid
+rising arrow, while the red and green glass/enamel circular backplates and
+metallic rims from `mobile_touch_skin.h` remain.
+
+This makes the actual in-game icon contour follow the chosen pictures
+significantly more closely than the old simple vector placeholders. It
+does not imply pixel-identical rendering: the references were resampled
+to 1-bit 64px silhouettes with two-tone colors.
+
+Input is unchanged: B still punches, A still jumps, and multitouch and
+hitboxes are unchanged. R/Ki and L/Power Pole remain charged-state blue,
+and the read-only RGB888 meter from the game PR is untouched.
+
+ROM-free host overlay smoke tests also check that >150 icon-mask
+horizontal runs are drawn and that the bright-blue rings appear for
+both specials only in ready state. Full APK compilation and actual
+Moto G100 appearance/perf tests remain pending. On the Android build,
+frame-to-frame icon rendering adds around 200 short horizontal spans
+per frame (no external asset upload, no new shader); FPS overhead must
+be verified rather than assumed negligible.
