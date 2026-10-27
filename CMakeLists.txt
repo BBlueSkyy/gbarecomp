@@ -1091,6 +1091,17 @@ endif()
 target_link_gbarecomp_runtime_stack(runtime_hotpath_bench)
 
 add_gbarecomp_runtime_stack_test(bridge_iret_tests tests/runtime/bridge_iret_test.cpp)
+add_executable(bridge_swi_return_tests tests/runtime/bridge_swi_return_test.cpp)
+target_link_gbarecomp_runtime_stack(bridge_swi_return_tests)
+add_test(NAME bridge_swi_return_tests COMMAND bridge_swi_return_tests)
+add_executable(swi_bridge_amplification EXCLUDE_FROM_ALL tests/performance/swi_bridge_amplification.cpp)
+target_include_directories(swi_bridge_amplification PRIVATE src/debug)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(swi_bridge_amplification PRIVATE -O1 -g0)
+endif()
+target_link_gbarecomp_runtime_stack(swi_bridge_amplification)
+
+
 add_gbarecomp_runtime_stack_test(high_resolution_tests tests/ppu/high_resolution_test.cpp)
 add_gbarecomp_runtime_stack_test(vertical_obj_tests tests/ppu/vertical_obj_test.cpp)
 add_gbarecomp_runtime_stack_test(dma_tests tests/dma/test_main.cpp)
