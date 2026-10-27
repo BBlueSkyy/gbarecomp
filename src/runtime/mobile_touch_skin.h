@@ -133,7 +133,20 @@ inline void staff_icon(HostOverlay& o, Circle b) {
 }
 // Real jumping silhouette and arrow contours from the selected reference.
 inline void jump_icon(HostOverlay& o, Circle b) {
-    mobile_reference::draw_jump(o,b.x,b.y,b.r);
+    mobile_reference::draw_jump(o,b.x-b.r*.070f,b.y,b.r*.97f);
+    // The selected green reference has a substantial filled upward arrow,
+    // separate from the character silhouette. The source crop did not
+    // preserve its entire outer tip, so reconstruct it as solid spans.
+    constexpr OverlayColor c{226,255,247,252};
+    const float r=b.r, cx=b.x+r*.57f, tip=b.y-r*.51f;
+    for (int i=0;i<10;i++) {
+        const float t=(i+.5f)/10.f;
+        const float hw=r*(.018f+.245f*t);
+        o.fill_rect(cx-hw,tip+r*.37f*t,2.f*hw,r*.043f,
+                    0.f,c,D);
+    }
+    o.fill_rect(cx-r*.093f,tip+r*.345f,r*.186f,r*.39f,
+                0.f,c,D);
 }
 
 // Small filled triangle made from thin rectangles; no ImGui-only primitive,
