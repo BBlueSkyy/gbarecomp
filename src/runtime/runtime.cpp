@@ -3101,7 +3101,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 #endif
         }
         void dump() const {
-            if (!active() || total == 0) return;
+            // The on-screen HUD never requires a CSV path or an on-exit file.
+            if (dump_path.empty() || total == 0) return;
             std::FILE* f = std::fopen(dump_path.c_str(), "w");
             if (!f) return;
             std::fprintf(f, "frame,guest_us,render_us,present_us,audio_us,"
