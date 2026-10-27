@@ -44,6 +44,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <csignal>
 #include <cstdint>
@@ -86,6 +87,18 @@ struct MissRec {
 
 std::map<std::uint32_t, MissRec> g_misses;        // keyed by PC & ~1
 std::uint64_t                    g_interp_insns = 0;
+#if defined(GBARECOMP_PERF_HUD)
+// Diagnostic only. The bridge is synchronous on the guest thread; do not add
+// a clock read to every interpreted instruction. Nested bridges share time.
+thread_local unsigned g_perf_bridge_depth = 0;
+struct PerfBridgeScope {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point started = Clock::now();
+    const bool outer;
+    explicit PerfBridgeScope(std::uint32_t pc);
+    ~PerfBridgeScope();
+};
+#endif
 bool                             g_miss_notice_logged = false;
 
 // ── Fatal-abort crash log ──────────────────────────────────────────
@@ -202,7 +215,28 @@ struct BridgeHistory {
     }
 };
 
+ }  // namespace
+
+#if defined(GBARECOMP_PERF_HUD)
+extern "C" unsigned long long g_perf_bridge_ns = 0;
+extern "C" unsigned long long g_perf_bridge_calls = 0;
+extern "C" unsigned long long g_perf_ram_bridge_calls = 0;
+namespace {
+PerfBridgeScope::PerfBridgeScope(std::uint32_t pc)
+    : outer(++g_perf_bridge_depth == 1) {
+    ++g_perf_bridge_calls;
+    if ((pc >> 24) == 2u || (pc >> 24) == 3u)
+        ++g_perf_ram_bridge_calls;
+}
+PerfBridgeScope::~PerfBridgeScope() {
+    --g_perf_bridge_depth;
+    if (!outer) return;
+    g_perf_bridge_ns += static_cast<unsigned long long>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now() - started).count());
+}
 }  // namespace
+#endif
 
 namespace gbarecomp {
 
@@ -651,6 +685,9 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
                                         std::uint64_t max_instrs) {
     using gbarecomp::active_bus;
     reject_strict_interpreter(entry_pc,"bridge");
+#if defined(GBARECOMP_PERF_HUD)
+    PerfBridgeScope perf_bridge_scope(entry_pc);
+#endif
 
     // Instruction budget: 0 → the default 200M abort-on-runaway (the on-miss
     // bridge); non-zero → a bounded gate pass that returns 0 instead of aborting.
