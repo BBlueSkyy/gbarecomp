@@ -771,19 +771,8 @@ PadLayout compute_pad_layout(const Backend* b) {
         p.l = {};
         p.r = {};
     }
-    if (b->mobile_action_hud) {
-        // Rather than a movable gamepad icon in the lower-right, expose a
-        // slender neutral-grey tab at the upper safe edge. The larger
-        // touch hit slop below stays available while the pad is hidden.
-        // Ignore the old persisted toggle_x/y from other APK versions.
-        const float tw = 3.2f * mm, th = 9.5f * mm;
-        const float cx = right - tw * 0.5f - 0.6f * mm;
-        const float cy = top + 7.2f * mm;
-        p.toggle = {std::clamp(cx - tw * 0.5f,left,std::max(left,right-tw)),
-                    std::clamp(cy - th * 0.5f,top,std::max(top,bottom-th)),tw,th};
-        return p;
-    }
-    // Generic titles retain the old moveable toggle and its saved location.
+    // Generic games retain their movable toggle; for the Dragon Ball HUD
+    // it is never drawn or hit-tested (pad_toggle_available() is false).
     const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
     float cx = right - edge - tw * 0.5f;
     float cy = bottom - edge - th * 0.5f;
@@ -838,10 +827,10 @@ bool touch_input_enabled(const Backend* b) {
 }
 
 bool pad_toggle_available(const Backend* b) {
-    // Only titles with another touch input path offer hiding the pad.
-    // Dragon Ball renders a slim fixed edge tab, not the floating gamepad
-    // icon. Generic titles retain the original movable visibility toggle.
-    return b && b->touch_policy &&
+    // Dragon Ball has no show/hide button or edge tab: do not draw one or
+    // intercept taps in its previous screen area. Generic games preserve
+    // the existing movable visibility toggle.
+    return b && !b->mobile_action_hud && b->touch_policy &&
            (b->touch_controls || b->touch_emulation);
 }
 
@@ -1185,29 +1174,6 @@ void draw_pad_toggle(Backend* b, HostOverlay& ov) {
     const PadRect& r = p.toggle;
     bool held = false;
     for (const auto& t : b->touches) held = held || (t.active && t.toggle);
-    if (b->mobile_action_hud) {
-        // Neutral, nearly transparent edge grip: one inward/outward
-        // chevron, not a floating gamepad glyph or persistent neon ring.
-        // Right-chevron hides; left-chevron restores.
-        const auto S = OverlaySpace::Drawable;
-        ov.fill_rect(r.x,r.y,r.w,r.h,r.w*0.5f,
-             held ? OverlayColor{142,153,167,135}
-                  : OverlayColor{74,83,94,58},S);
-        ov.stroke_rect(r.x,r.y,r.w,r.h,r.w*0.5f,
-             std::max(1.0f,b->px_per_mm*.11f),
-             held ? OverlayColor{237,244,248,183}
-                  : OverlayColor{191,201,213,112},S);
-        const float cx=r.x+r.w*.50f, cy=r.y+r.h*.50f;
-        const float tip = r.w*.23f;
-        const float dy = r.h*.14f;
-        const float dir=b->pad_visible ? 1.f : -1.f;
-        const OverlayColor c = held ? OverlayColor{246,250,255,222}
-                                    : OverlayColor{214,223,232,164};
-        const float stroke = std::max(1.2f,b->px_per_mm*.22f);
-        ov.line(cx-dir*tip,cy-dy,cx+dir*tip,cy,stroke,c,S);
-        ov.line(cx+dir*tip,cy,cx-dir*tip,cy+dy,stroke,c,S);
-        return;
-    }
     const OverlayColor bg = held ? OverlayColor{80, 210, 255, 170}
                           : b->pad_visible ? OverlayColor{255, 214, 74, 120}
                                            : OverlayColor{20, 26, 38, 110};
@@ -2511,10 +2477,9 @@ void HostWindow::configure_mobile_action_hud(
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
     b->mobile_action_hud = enable;
-    // The new fixed edge tab can restore hidden controls, so a saved
-    // visibility choice is safe to honor instead of forcing the pad on.
-    if (enable && b->touch_controls && !b->pad_choice_saved)
-        b->pad_visible = true;
+    // No show/hide UI for this title. Always make the four action buttons
+    // and D-pad available even if an older APK stored pad_visible=0.
+    if (enable && b->touch_controls) b->pad_visible = true;
     b->special_meter_probe = enable ? probe : nullptr;
     b->special_ready = false;
     b->special_ready_streak = b->special_not_ready_streak = 0;
@@ -3081,8 +3046,9 @@ void HostWindow::set_touch_config_dir(const char* dir) {
             b->toggle_pos_saved = true;
         }
     });
-    // Config is loaded after configure_mobile_action_hud(). Honor a
-    // previously hidden pad: the always-visible fixed edge tab restores it.
+    // Config loads after configure_mobile_action_hud(); old saved hidden
+    // state must not disable the pad when no restore toggle is available.
+    if (b->mobile_action_hud && b->touch_controls) b->pad_visible = true;
     ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Audio",
                      [b](const char* key, const char* val) {
         if (SDL_strcasecmp(key, "enhanced") == 0) {
@@ -3387,15 +3353,7 @@ HostWindow::Events HostWindow::pump() {
                 } else if (touch->routed) {
                     route(e.type == SDL_FINGERUP ? TouchPhase::Up : TouchPhase::Move);
                 } else if (touch->toggle) {
-                    // Dragon Ball's edge tab is fixed. Never drag it into the
-                    // scene; a release in its expanded hit area toggles the
-                    // controls without modifying their game input regions.
-                    if (b->mobile_action_hud) {
-                        if (e.type == SDL_FINGERUP &&
-                            pad.toggle.contains(px,py,2.0f*b->px_per_mm))
-                            set_touch_pad_visible(!b->pad_visible);
-                    } else {
-                    // Generic games keep the draggable toggle.
+                    // Only generic titles can reach this movable toggle.
                     const float slop = 2.5f * b->px_per_mm;
                     const float mx = px - touch->start_x, my = py - touch->start_y;
                     if (!touch->toggle_dragging && mx * mx + my * my > slop * slop)
@@ -3414,7 +3372,6 @@ HostWindow::Events HostWindow::pump() {
                                pad.toggle.contains(px, py, 2.0f * b->px_per_mm)) {
                         set_touch_pad_visible(!b->pad_visible);
                     }
-                    } // generic draggable toggle
                 }
                 if (e.type == SDL_FINGERUP) *touch = {};
             }
