@@ -57,9 +57,17 @@ inline void bezel(HostOverlay& o, Circle c, Color top, Color bottom, bool presse
         o.stroke_circle(c.x,c.y,r*1.080f,r*.035f,
                         {175,248,255,A(175+75*beat)},D);
     } else {
-        o.stroke_circle(c.x,c.y,r*1.097f,r*.042f,
-                        special ? Color{55,135,222,80} :
-                                  Color{215,229,250,68},D);
+        // Charged glow is dynamic. Non-special punch/jump buttons keep
+        // a faint red/green enamel rim as in the approved mobile mockup.
+        const bool fist = !special && top.r > top.g;
+        const Color idle = special ? Color{55,135,222,78} :
+                          fist ? Color{255,88,103,140} :
+                                 Color{75,223,156,118};
+        o.stroke_circle(c.x,c.y,r*1.097f,r*.042f,idle,D);
+        if (!special)
+            o.stroke_circle(c.x,c.y,r*1.056f,r*.018f,
+                fist ? Color{255,190,168,130} :
+                       Color{166,255,217,118},D);
     }
     // Dark metal frame, blue silver rim and glossy translucent body.
     o.fill_circle(c.x,c.y,r*1.030f,{5,18,32,233},D);
