@@ -2519,6 +2519,16 @@ bool HostWindow::drawable_size(int* width, int* height) const {
            *width > 0 && *height > 0;
 }
 
+void HostWindow::configure_mobile_action_hud(
+        bool enable, SpecialMeterProbe probe) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    b->mobile_action_hud = enable;
+    b->special_meter_probe = enable ? probe : nullptr;
+    b->special_ready = false;
+    b->special_ready_streak = b->special_not_ready_streak = 0;
+}
+
 void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
 
 void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
@@ -2574,6 +2584,26 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
         rgb888 = b->presentation_upload.data();
     }
     note_present_for_health(b);
+    if (b->mobile_action_hud && b->special_meter_probe) {
+        // Read the raw visible guest HUD only. No writes, no CPU cycle changes,
+        // and never sample color-graded or filter-generated host pixels.
+        const float fraction = b->special_meter_probe(
+            rgb888, static_cast<unsigned>(texture_w),
+            static_cast<unsigned>(texture_h));
+        if (fraction < 0.0f) {
+            b->special_ready = false;
+            b->special_ready_streak = b->special_not_ready_streak = 0;
+        } else if (fraction >= 0.96f) {
+            b->special_not_ready_streak = 0;
+            b->special_ready_streak = std::min(4u, b->special_ready_streak + 1u);
+            if (b->special_ready_streak >= 3u) b->special_ready = true;
+        } else if (fraction < 0.85f) {
+            b->special_ready_streak = 0;
+            b->special_not_ready_streak =
+                std::min(4u, b->special_not_ready_streak + 1u);
+            if (b->special_not_ready_streak >= 3u) b->special_ready = false;
+        }
+    }
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
     if (b->color_lut && !b->color_lut->is_passthrough()) {
@@ -3640,6 +3670,7 @@ void HostWindow::set_scanline_effect(int) {}
 int HostWindow::scanline_effect() const { return 0; }
 void HostWindow::set_color_profile(int) {}
 int HostWindow::color_profile() const { return 0; }
+void HostWindow::configure_mobile_action_hud(bool, SpecialMeterProbe) {}
 void HostWindow::set_touch_pad_scale(int) {}
 int HostWindow::touch_pad_scale() const { return 100; }
 bool HostWindow::saved_audio_enhanced(bool& /*enabled*/) const { return false; }
