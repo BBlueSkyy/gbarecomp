@@ -221,6 +221,8 @@ struct BridgeHistory {
 extern "C" unsigned long long g_perf_bridge_ns = 0;
 extern "C" unsigned long long g_perf_bridge_calls = 0;
 extern "C" unsigned long long g_perf_ram_bridge_calls = 0;
+extern "C" unsigned long long g_perf_bridge_insns_live = 0;
+extern "C" unsigned g_perf_bridge_active(void) { return g_perf_bridge_depth != 0; }
 namespace {
 PerfBridgeScope::PerfBridgeScope(std::uint32_t pc)
     : outer(++g_perf_bridge_depth == 1) {
@@ -897,6 +899,9 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
         armv4t::Interpreter::Result r =
             armv4t::Interpreter::step(cpu, *bus, insn, &cyc);
         ++bridged_insns;
+#if defined(GBARECOMP_PERF_HUD)
+        ++g_perf_bridge_insns_live;  // live even if this subtree never exits
+#endif
 
         if (r == armv4t::Interpreter::Result::NotImplemented ||
             r == armv4t::Interpreter::Result::Undefined) {
