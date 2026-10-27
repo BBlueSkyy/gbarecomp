@@ -130,17 +130,20 @@ namespace {
 // Callback runs on the rendering/guest thread, so these strings need no locks.
 struct LivePerfHud {
     void (*previous_overlay)(gbarecomp::HostOverlay*) = nullptr;
-    char lines[10][128] = {
-        "DRAGON BALL | LIVE PERFORMANCE",
-        "Collecting first second of frame samples...",
-        "GUEST: -- | VIDEO: --",
-        "BRIDGE: -- | INTERP: --",
-        "PPU SCAN: -- | RAM BRIDGES: --",
-        "AUDIO: -- | INPUT: -- | WAIT: --",
-        "Counters update every ~1 second.",
-        "HOT 1: waiting for data...",
-        "HOT 2: waiting for data...",
-        "HOT 3: waiting for data..."
+    char lines[13][128] = {
+        "DRAGON BALL | BIOS SWI LIVE ATTRIBUTION",
+        "Collecting the first second of samples...",
+        "BRIDGE: -- | IRQ: --",
+        "INTERP: -- | PPU: --",
+        "SWI 1: waiting...",
+        "SWI 2: waiting...",
+        "SWI 3: waiting...",
+        "PC 1: waiting...",
+        "PC 2: waiting...",
+        "PC 3: waiting...",
+        "HALT SAMPLES: -- | DROPPED: --",
+        "ACTIVE PC: -- | OTHER BRIDGES: --",
+        "SWI times include nested IRQ; PC samples are approximate."
     };
 };
 LivePerfHud g_live_perf_hud;
@@ -154,14 +157,14 @@ void draw_live_perf_hud(gbarecomp::HostOverlay* ov) {
     const float x = 16.0f + static_cast<float>(safe.left);
     const float y = 10.0f + static_cast<float>(safe.top);
     const auto space = gbarecomp::OverlaySpace::Drawable;
-    ov->fill_rect(x, y, 980.0f, 319.0f, 9.0f,
+    ov->fill_rect(x, y, 1050.0f, 358.0f, 9.0f,
                   {4, 11, 22, 220}, space);
-    for (int row = 0; row < 10; ++row) {
+    for (int row = 0; row < 13; ++row) {
         const gbarecomp::OverlayColor color =
             row == 0 ? gbarecomp::OverlayColor{117, 226, 255, 255}
                      : gbarecomp::OverlayColor{250, 250, 250, 255};
-        ov->text(x + 12.0f, y + 10.0f + 29.0f * row,
-                 23.0f, color, g_live_perf_hud.lines[row],
+        ov->text(x + 12.0f, y + 9.0f + 26.0f * row,
+                 20.0f, color, g_live_perf_hud.lines[row],
                  gbarecomp::OverlayAlign::Left, space);
     }
 }
@@ -2994,6 +2997,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         uint64_t hud_guest_us = 0, hud_render_us = 0, hud_present_us = 0;
         uint64_t hud_audio_us = 0, hud_pump_us = 0, hud_pacer_us = 0;
         uint64_t hud_prev_scan_ns = 0, hud_prev_bridge_ns = 0;
+        uint64_t hud_prev_irq_ns = 0;
         uint64_t hud_prev_interp = 0, hud_prev_bridges = 0, hud_prev_ram = 0;
         uint64_t hud_prev_cycles = 0;
 #endif
@@ -3043,6 +3047,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 hud_start_ns = t5;
                 hud_prev_scan_ns = g_prof_scanline_ns;
                 hud_prev_bridge_ns = g_perf_bridge_ns;
+                hud_prev_irq_ns = g_perf_irq_in_bridge_ns;
                 hud_prev_interp = g_perf_bridge_insns_live;
                 hud_prev_bridges = g_perf_bridge_calls;
                 hud_prev_ram = g_perf_ram_bridge_calls;
@@ -3070,6 +3075,12 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 const uint64_t guest_cycles = g_runtime_cycles;
                 RuntimePerfHotBridge hot_sites[3]{};
                 runtime_perf_bridge_top_sample(hot_sites);
+                RuntimePerfSwiSite swi_sites[3]{};
+                RuntimePerfPcSample pc_sites[3]{};
+                std::uint64_t dropped = 0, halted_samples = 0;
+                runtime_perf_swi_top_sample(swi_sites);
+                runtime_perf_internal_pc_top_sample(
+                    pc_sites, &dropped, &halted_samples);
                 const double speed_percent =
                     (guest_cycles - hud_prev_cycles) / elapsed_s / 16777216.0 * 100.0;
                 auto& lines = g_live_perf_hud.lines;
@@ -3077,53 +3088,65 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                               "DRAGON BALL | %.1f FPS | GBA SPEED %.0f%%",
                               fps, speed_percent);
                 std::snprintf(lines[1], sizeof(lines[1]),
-                              "GUEST %.1f ms  |  HOST VIDEO %.1f ms",
+                              "GUEST %.1f ms/frame | HOST VIDEO %.1f ms/frame",
                               hud_guest_us * ms_per_us,
                               (hud_render_us + hud_present_us) * ms_per_us);
                 std::snprintf(lines[2], sizeof(lines[2]),
-                              "BRIDGE DONE %.1f ms/frame | %llu calls/s %s",
+                              "BRIDGE %.1f ms/f | BRIDGE IRQ %.1f ms/f | %.0f calls/s",
                               (bridge_ns - hud_prev_bridge_ns) * ms_per_ns,
-                              static_cast<unsigned long long>(
-                                  (bridges - hud_prev_bridges) / elapsed_s),
-                              g_perf_bridge_active() ? "| ACTIVE" : "");
+                              (g_perf_irq_in_bridge_ns - hud_prev_irq_ns) * ms_per_ns,
+                              (bridges - hud_prev_bridges) / elapsed_s);
                 std::snprintf(lines[3], sizeof(lines[3]),
-                              "BRIDGED %llu instr/s  |  RAM BRIDGE %llu/s",
-                              static_cast<unsigned long long>(
-                                  (interp - hud_prev_interp) / elapsed_s),
-                              static_cast<unsigned long long>(
-                                  (ram - hud_prev_ram) / elapsed_s));
-                std::snprintf(lines[4], sizeof(lines[4]),
-                              "PPU SCAN %.1f ms/frame (overlaps BRIDGE)",
-                              (scan_ns - hud_prev_scan_ns) * ms_per_ns);
-                std::snprintf(lines[5], sizeof(lines[5]),
-                              "AUDIO %.1f ms  INPUT %.1f ms  WAIT %.1f ms",
-                              hud_audio_us * ms_per_us, hud_pump_us * ms_per_us,
+                              "INTERP %.2f M/s | PPU %.1f ms/f | WAIT %.1f ms/f",
+                              (interp - hud_prev_interp) / elapsed_s / 1e6,
+                              (scan_ns - hud_prev_scan_ns) * ms_per_ns,
                               hud_pacer_us * ms_per_us);
-                std::snprintf(lines[6], sizeof(lines[6]),
-                              "DISPATCH MISSES %u (total) | ACTIVE PC %08X",
-                              gbarecomp::self_heal_distinct_misses(),
-                              runtime_perf_bridge_active_pc());
                 for (unsigned rank = 0; rank < 3; ++rank) {
-                    const auto& h = hot_sites[rank];
-                    if (h.calls) {
-                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
-                                      "HOT %u  %08X %c | %.1f ms | %llu calls | %llu k instr",
-                                      rank + 1, h.pc, h.thumb ? 'T' : 'A',
-                                      h.elapsed_ns / 1000000.0,
-                                      static_cast<unsigned long long>(h.calls),
-                                      static_cast<unsigned long long>(
-                                          h.instructions / 1000));
+                    const auto& item = swi_sites[rank];
+                    if (item.calls) {
+                        std::snprintf(lines[4+rank], sizeof(lines[4+rank]),
+                                      "SWI%u %02X @ %08X %c | %.1f ms/s | %llu calls | %.0f k ins",
+                                      rank + 1, item.number, item.callsite,
+                                      item.thumb ? 'T' : 'A',
+                                      item.elapsed_ns / 1e6 / elapsed_s,
+                                      static_cast<unsigned long long>(item.calls),
+                                      item.instructions / 1000.0);
                     } else {
-                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
-                                      "HOT %u  no completed bridge this second", rank + 1);
+                        std::snprintf(lines[4+rank], sizeof(lines[4+rank]),
+                                      "SWI%u no completed BIOS SWI bridge", rank + 1);
                     }
                 }
+                for (unsigned rank = 0; rank < 3; ++rank) {
+                    const auto& item = pc_sites[rank];
+                    if (item.samples) {
+                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
+                                      "PC%u %08X %c | %llu samples /~128 | estimated %.1f M ins",
+                                      rank + 1, item.pc, item.thumb ? 'T' : 'A',
+                                      static_cast<unsigned long long>(item.samples),
+                                      item.samples * 128.0 / 1e6);
+                    } else {
+                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
+                                      "PC%u no interpreted-PC samples", rank + 1);
+                    }
+                }
+                std::snprintf(lines[10], sizeof(lines[10]),
+                              "HALT SAMPLES %llu | PC HASH DROPS %llu | RAM BRIDGE %.0f/s",
+                              static_cast<unsigned long long>(halted_samples),
+                              static_cast<unsigned long long>(dropped),
+                              (ram - hud_prev_ram) / elapsed_s);
+                std::snprintf(lines[11], sizeof(lines[11]),
+                              "ACTIVE %08X | DISPATCH MISSES %u total",
+                              runtime_perf_bridge_active_pc(),
+                              gbarecomp::self_heal_distinct_misses());
+                std::snprintf(lines[12], sizeof(lines[12]),
+                              "SWI/IRQ inclusive; PC samples ~1/128 interp steps");
                 hud_start_ns = t5;
                 hud_frames = 0;
                 hud_guest_us = hud_render_us = hud_present_us = 0;
                 hud_audio_us = hud_pump_us = hud_pacer_us = 0;
                 hud_prev_scan_ns = scan_ns;
                 hud_prev_bridge_ns = bridge_ns;
+                hud_prev_irq_ns = g_perf_irq_in_bridge_ns;
                 hud_prev_interp = interp;
                 hud_prev_bridges = bridges;
                 hud_prev_ram = ram;

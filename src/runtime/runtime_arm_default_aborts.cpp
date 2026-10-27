@@ -44,6 +44,7 @@
 #include "../gba/gba_bus.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -100,6 +101,9 @@ struct PerfBridgeScope {
     bool thumb = false;
     std::uint64_t insns_at_entry = 0;
     std::uint32_t previous_pc = 0;
+    bool attributed_swi = false;
+    std::uint32_t swi_number = 0, swi_callsite = 0;
+    bool swi_thumb = false;
     explicit PerfBridgeScope(std::uint32_t pc, bool thumb);
     ~PerfBridgeScope();
 };
@@ -235,12 +239,61 @@ struct PerfSiteCounters {
 // Host-side diagnostic aggregate only; ~210 calls/s in the observed gameplay.
 // No std::map lookup occurs on the interpreted instruction hot loop.
 std::map<std::uint64_t, PerfSiteCounters> g_perf_sites;
+std::map<std::uint64_t, PerfSiteCounters> g_perf_swi_sites;
 std::uint32_t g_perf_current_pc = 0;
+std::uint32_t g_perf_last_swi_number = 0xFFFFFFFFu;
+std::uint32_t g_perf_last_swi_callsite = 0;
+bool g_perf_last_swi_thumb = false;
+
+// Bounded, hash-indexed sampling about every 128 interpreted instructions.
+// No allocation, timers, map lookups or sorting in the per-step loop.
+constexpr std::size_t kPcSamplesSize = 4096;
+struct PcBucket {
+    std::uint64_t key = 0;
+    std::uint64_t count = 0;
+};
+std::array<PcBucket, kPcSamplesSize> g_perf_pc_samples{};
+std::uint64_t g_perf_pc_dropped = 0;
+std::uint64_t g_perf_halt_samples = 0;
+// Jitter 96..159 interpreted instructions between samples (mean ~127.5).
+// A fixed 128-step phase can repeatedly sample the same PC in a tight guest
+// loop whose instruction count aliases that interval.
+std::uint64_t g_perf_next_pc_sample = 128;
+std::uint32_t g_perf_sample_rng = 0x7F4A7C15u;
+void note_internal_pc(std::uint32_t pc, bool thumb, bool halted) {
+    const std::uint64_t key = (((std::uint64_t(pc) << 1) |
+                                 std::uint64_t(thumb)) + 1u);
+    const auto slot = static_cast<std::size_t>(
+        ((pc >> 1) ^ (pc >> 13) ^ (thumb ? 0x9E3779B9u : 0u))
+        % kPcSamplesSize);
+    for (std::size_t probe = 0; probe < 4; ++probe) {
+        PcBucket& item = g_perf_pc_samples[(slot + probe) % kPcSamplesSize];
+        if (item.key == 0 || item.key == key) {
+            item.key = key;
+            ++item.count;
+            if (halted) ++g_perf_halt_samples;
+            return;
+        }
+    }
+    ++g_perf_pc_dropped;
+    if (halted) ++g_perf_halt_samples;
+}
 PerfBridgeScope::PerfBridgeScope(std::uint32_t entry, bool is_thumb)
     : outer(++g_perf_bridge_depth == 1), pc(entry), thumb(is_thumb),
       insns_at_entry(g_perf_bridge_insns_live),
       previous_pc(g_perf_current_pc) {
     g_perf_current_pc = entry;
+    // The unresolved BIOS SWI vector is shared by *all* unsupported services.
+    // Capture the service/callsite at this entry, before nested SWIs replace
+    // the diagnostic "last seen" values.
+    if (entry == 0x00000008u && !is_thumb &&
+        (g_cpu.cpsr & 0x1Fu) == 0x13u &&
+        g_perf_last_swi_number <= 0xFFu) {
+        attributed_swi = true;
+        swi_number = g_perf_last_swi_number;
+        swi_callsite = g_perf_last_swi_callsite;
+        swi_thumb = g_perf_last_swi_thumb;
+    }
     ++g_perf_bridge_calls;
     if ((pc >> 24) == 2u || (pc >> 24) == 3u)
         ++g_perf_ram_bridge_calls;
@@ -255,11 +308,27 @@ PerfBridgeScope::~PerfBridgeScope() {
     site.elapsed_ns += ns;
     site.instructions += g_perf_bridge_insns_live - insns_at_entry;
     ++site.calls;
+    if (attributed_swi) {
+        const std::uint64_t swi_key =
+            (std::uint64_t(swi_number) << 33) |
+            (std::uint64_t(swi_callsite) << 1) | std::uint64_t(swi_thumb);
+        auto& record = g_perf_swi_sites[swi_key];
+        record.elapsed_ns += ns;
+        record.instructions += g_perf_bridge_insns_live - insns_at_entry;
+        ++record.calls;
+    }
     g_perf_current_pc = previous_pc;
     --g_perf_bridge_depth;
     if (outer) g_perf_bridge_ns += ns;
 }
 }  // namespace
+extern "C" void runtime_perf_note_swi(std::uint32_t number,
+                                         std::uint32_t callsite,
+                                         std::uint32_t caller_thumb) {
+    g_perf_last_swi_number = number;
+    g_perf_last_swi_callsite = callsite;
+    g_perf_last_swi_thumb = caller_thumb != 0;
+}
 extern "C" std::uint32_t runtime_perf_bridge_active_pc() {
     return g_perf_current_pc;
 }
@@ -284,6 +353,68 @@ extern "C" void runtime_perf_bridge_top_sample(RuntimePerfHotBridge output[3]) {
         }
         site = {}; // reset per-second diagnostic window, preserve identity
     }
+}
+extern "C" void runtime_perf_swi_top_sample(RuntimePerfSwiSite output[3]) {
+    // Aggregate by *SWI service number*, not merely the callsite.
+    // Otherwise three callsites of the same service can crowd out the
+    // actual second/third hottest services. Display the most costly caller
+    // for each grouped service as an additional clue.
+    struct Aggregate {
+        RuntimePerfSwiSite site{};
+        std::uint64_t biggest_callsite_ns = 0;
+    };
+    std::array<Aggregate, 256> per_service{};
+    for (auto& [key, counters] : g_perf_swi_sites) {
+        if (!counters.calls) continue;
+        const auto number = static_cast<std::uint32_t>((key >> 33) & 0xFFu);
+        auto& dst = per_service[number];
+        dst.site.number = number;
+        dst.site.elapsed_ns += counters.elapsed_ns;
+        dst.site.instructions += counters.instructions;
+        dst.site.calls += counters.calls;
+        if (counters.elapsed_ns > dst.biggest_callsite_ns) {
+            dst.biggest_callsite_ns = counters.elapsed_ns;
+            dst.site.callsite =
+                static_cast<std::uint32_t>((key >> 1) & 0xFFFFFFFFu);
+            dst.site.thumb = static_cast<std::uint32_t>(key & 1u);
+        }
+        counters = {};  // reset window, keep source identity for next window
+    }
+    for (unsigned j = 0; j < 3; ++j) output[j] = {};
+    for (const auto& bin : per_service) {
+        const auto& item = bin.site;
+        if (!item.calls) continue;
+        for (unsigned i = 0; i < 3; ++i) {
+            if (item.elapsed_ns > output[i].elapsed_ns) {
+                for (unsigned k = 2; k > i; --k) output[k] = output[k-1];
+                output[i] = item;
+                break;
+            }
+        }
+    }
+}
+extern "C" void runtime_perf_internal_pc_top_sample(
+        RuntimePerfPcSample output[3], std::uint64_t* dropped,
+        std::uint64_t* halted_samples) {
+    for (unsigned j = 0; j < 3; ++j) output[j] = {};
+    for (auto& b : g_perf_pc_samples) {
+        if (!b.key || !b.count) continue;
+        RuntimePerfPcSample item{};
+        item.pc = static_cast<std::uint32_t>((b.key - 1u) >> 1);
+        item.thumb = static_cast<std::uint32_t>((b.key - 1u) & 1u);
+        item.samples = b.count;
+        for (unsigned i = 0; i < 3; ++i) {
+            if (item.samples > output[i].samples) {
+                for (unsigned k = 2; k > i; --k) output[k] = output[k-1];
+                output[i] = item;
+                break;
+            }
+        }
+        b = {};
+    }
+    if (dropped) *dropped = g_perf_pc_dropped;
+    if (halted_samples) *halted_samples = g_perf_halt_samples;
+    g_perf_pc_dropped = g_perf_halt_samples = 0;
 }
 #endif
 
@@ -948,6 +1079,14 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
         ++bridged_insns;
 #if defined(GBARECOMP_PERF_HUD)
         ++g_perf_bridge_insns_live;  // live even if this subtree never exits
+        if (g_perf_bridge_insns_live >= g_perf_next_pc_sample) {
+            note_internal_pc(pc, was_thumb, bus->io().halted());
+            // Xorshift only at sample boundaries; no PRNG inside each step.
+            g_perf_sample_rng ^= g_perf_sample_rng << 13;
+            g_perf_sample_rng ^= g_perf_sample_rng >> 17;
+            g_perf_sample_rng ^= g_perf_sample_rng << 5;
+            g_perf_next_pc_sample += 96u + (g_perf_sample_rng & 63u);
+        }
 #endif
 
         if (r == armv4t::Interpreter::Result::NotImplemented ||
