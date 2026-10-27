@@ -186,6 +186,10 @@ struct RunOptions {
     // 240x160 RGB888 guest pixels; -1 means cannot reliably detect.
     float (*mobile_special_meter_probe)(const std::uint8_t* rgb888,
                                         unsigned width, unsigned height) = nullptr;
+    // Optional game-owned menu recognition from the exact raw guest image;
+    // the title can use its separate input_frame callback to steer taps.
+    void (*mobile_menu_frame_probe)(const std::uint8_t* rgb888,
+                                    unsigned width, unsigned height) = nullptr;
 
     // Virtual gamepad overlay default when config.ini has no saved choice:
     // -1 = platform default (on for Android, off on desktop), 0 = off, 1 = on.

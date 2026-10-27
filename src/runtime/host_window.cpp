@@ -379,6 +379,7 @@ struct Backend {
     bool pad_visible = false;
     bool mobile_action_hud = false;
     HostWindow::SpecialMeterProbe special_meter_probe = nullptr;
+    HostWindow::MobileMenuFrameProbe mobile_menu_frame_probe = nullptr;
     bool special_ready = false;
     unsigned special_ready_streak = 0;
     unsigned special_not_ready_streak = 0;
@@ -2477,6 +2478,11 @@ void HostWindow::configure_mobile_action_hud(
     b->special_ready_streak = b->special_not_ready_streak = 0;
 }
 
+void HostWindow::set_mobile_menu_frame_probe(MobileMenuFrameProbe probe) {
+    if (!open_ || !impl_) return;
+    static_cast<Backend*>(impl_)->mobile_menu_frame_probe = probe;
+}
+
 void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
 
 void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
@@ -2532,6 +2538,11 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
         rgb888 = b->presentation_upload.data();
     }
     note_present_for_health(b);
+    // The game's classifier sees the native RGB888 presentation only. It
+    // never edits emulated memory or synthesizes input on the render path.
+    if (b->mobile_menu_frame_probe)
+        b->mobile_menu_frame_probe(rgb888, static_cast<unsigned>(texture_w),
+                                   static_cast<unsigned>(texture_h));
     if (b->mobile_action_hud && b->special_meter_probe) {
         // Read the raw visible guest HUD only. No writes, no CPU cycle changes,
         // and never sample color-graded or filter-generated host pixels.
@@ -3619,6 +3630,7 @@ int HostWindow::scanline_effect() const { return 0; }
 void HostWindow::set_color_profile(int) {}
 int HostWindow::color_profile() const { return 0; }
 void HostWindow::configure_mobile_action_hud(bool, SpecialMeterProbe) {}
+void HostWindow::set_mobile_menu_frame_probe(MobileMenuFrameProbe) {}
 void HostWindow::set_touch_pad_scale(int) {}
 int HostWindow::touch_pad_scale() const { return 100; }
 bool HostWindow::saved_audio_enhanced(bool& /*enabled*/) const { return false; }

@@ -127,6 +127,10 @@ public:
     // color-graded host pixels; return 0..1 or -1 when gauge is unavailable.
     using SpecialMeterProbe = float (*)(const uint8_t*, unsigned, unsigned);
     void configure_mobile_action_hud(bool enable, SpecialMeterProbe probe);
+    // Optional game-owned, read-only classifier for visible touch menus.
+    // Runs at present with raw RGB888 pixels, before host filters.
+    using MobileMenuFrameProbe = void (*)(const uint8_t*, unsigned, unsigned);
+    void set_mobile_menu_frame_probe(MobileMenuFrameProbe probe);
 
     // ---- touch (touch_input.h) ---------------------------------------------
     // `policy` = the game consumes touch through RunOptions::input_frame;

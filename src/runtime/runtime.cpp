@@ -3206,6 +3206,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             if (opts.mobile_action_hud)
                 win.configure_mobile_action_hud(
                     true, opts.mobile_special_meter_probe);
+            if (opts.mobile_menu_frame_probe)
+                win.set_mobile_menu_frame_probe(opts.mobile_menu_frame_probe);
 #endif
             win.set_touch_config_dir(exe_dir.c_str());
             // The player's menu choice wins over [audio].shadow;
