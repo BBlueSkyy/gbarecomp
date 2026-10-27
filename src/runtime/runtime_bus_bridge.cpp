@@ -80,6 +80,11 @@ std::function<void()> g_vblank_input_hook;
 static const bool g_phase_prof = [] {
     const char* e = std::getenv("GBARECOMP_PHASE_PROF");
     bool on = (e != nullptr) && !(e[0] == '0' && e[1] == '\0');
+#if defined(GBARECOMP_PERF_HUD)
+    // Measure the actual scanline composer in this opt-in Android diagnosis.
+    // ~160 clock pairs/frame, never one per guest instruction.
+    on = true;
+#endif
     if (on) {
         std::atexit([] {
             std::fprintf(stderr,
