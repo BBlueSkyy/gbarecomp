@@ -376,6 +376,12 @@ struct Backend {
     // GBARECOMP_TOUCH_CONTROLS) and its player-controlled visibility.
     bool touch_controls = false;
     bool pad_visible = false;
+    int pad_scale_percent = 100; // controls and hitboxes scale together
+    int scanline_effect = 0;     // off / subtle / strong
+    int color_profile = 0;       // raw / backlit / classic / frontlit / unlit
+    bool display_preset_saved = false;
+    SDL_Texture* scanline_texture = nullptr;
+    int scanline_texture_height = 0;
     bool pad_choice_saved = false;
     // Player-placed pad toggle: centre as a fraction of the safe area, so it
     // keeps its place across rotation. Unset = bottom-right corner.
@@ -668,11 +674,12 @@ PadLayout compute_pad_layout(const Backend* b) {
     // scenes), shrink to fit it rather than overlaying the image.
     constexpr float kBandNeed = 50.0f;              // mm at full size
     const float band_avail = (bottom - static_cast<float>(g.y + g.height)) / mm;
-    float s = 1.0f;
-    if (dw < dh) {
-        s = std::clamp(avail_w / need_w, 0.65f, 1.0f);
-        if (band_avail >= kBandNeed * 0.65f) s = std::min(s, band_avail / kBandNeed);
-    }
+    float s = std::clamp(static_cast<float>(b->pad_scale_percent) / 100.0f,
+                         0.8f, 1.2f);
+    // Keep both sides separated even when enlarged on a narrower display.
+    s = std::min(s, avail_w / need_w);
+    if (dw < dh && band_avail >= kBandNeed * 0.65f)
+        s = std::min(s, band_avail / kBandNeed);
     const float margin = kMargin * s * mm;
     const float arm = kArm * s * mm;
     const float button_r = kButtonR * s * mm;
@@ -743,14 +750,15 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     const float dy = y - p.dpad.y;
     const float reach = p.dpad.r * 1.35f;
     if (std::abs(dx) <= reach && std::abs(dy) <= reach) {
+        // Two-axis input with a small common dead zone. Allow diagonals
+        // rather than snapping to whichever axis has the larger magnitude.
+        // The ratio threshold avoids jitter when dragging nearly horizontally.
         const float dead = p.dpad.r * 0.18f;
-        if (std::abs(dx) > std::abs(dy)) {
-            if (dx > dead) buttons |= 1u << 4;   // Right
-            if (dx < -dead) buttons |= 1u << 5;  // Left
-        } else {
-            if (dy < -dead) buttons |= 1u << 6;  // Up
-            if (dy > dead) buttons |= 1u << 7;   // Down
-        }
+        const float ax = std::abs(dx), ay = std::abs(dy);
+        if (ax > dead && ax >= ay * 0.45f)
+            buttons |= dx > 0 ? (1u << 4) : (1u << 5);
+        if (ay > dead && ay >= ax * 0.45f)
+            buttons |= dy > 0 ? (1u << 7) : (1u << 6);
     }
     auto in_circle = [x, y](const PadCircle& c, float scale) {
         const float ex = x - c.x, ey = y - c.y;
