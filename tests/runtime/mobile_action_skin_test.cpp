@@ -10,7 +10,7 @@
 using namespace gbarecomp;
 struct Recorder final : HostOverlay {
     int circles = 0, rounded = 0, lines = 0;
-    int bright_blue = 0;
+    int bright_blue = 0, pink_punch_rim = 0, mint_jump_rim = 0;
     int icon_spans = 0;
     int drawable_width() const override { return 1920; }
     int drawable_height() const override { return 1080; }
@@ -37,6 +37,8 @@ struct Recorder final : HostOverlay {
     void fill_circle(float,float,float,OverlayColor,OverlaySpace) override { ++circles; }
     void stroke_circle(float,float,float,float,OverlayColor c,OverlaySpace) override {
         if(c.r == 65 && c.g == 194 && c.b == 255) ++bright_blue;
+        if(c.r == 255 && c.g == 187 && c.b == 207) ++pink_punch_rim;
+        if(c.r == 218 && c.g == 255 && c.b == 247) ++mint_jump_rim;
     }
     void arc(float,float,float,float,float,float,OverlayColor,OverlaySpace) override {}
     bool text_supported() const override { return false; }
@@ -56,6 +58,8 @@ int main() {
     assert(idle.circles > 5 && idle.rounded > 200 && idle.lines > 15);
     assert(idle.icon_spans > 150); // traced fist + leaping figure, not generic glyphs
     assert(idle.bright_blue == 0);
+    assert(idle.pink_punch_rim == 1 && idle.mint_jump_rim == 1);
+    assert(ready.pink_punch_rim == 1 && ready.mint_jump_rim == 1);
     assert(ready.bright_blue == 2); // both Power Pole and Ki only
     assert(pressed.bright_blue == 2);
     std::puts("mobile action HUD: traced fist/jump masks, four icons, charge rings, D-pad OK");
