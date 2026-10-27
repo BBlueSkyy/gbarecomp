@@ -38,33 +38,49 @@ inline void seg(HostOverlay& o, Circle c, float x, float y, float xx, float yy,
 // colored decorative rim, visibly weaker, with no flashing animation.
 inline void bezel(HostOverlay& o, Circle c, Color top, Color bottom, bool pressed,
                   bool special, bool ready, float phase) {
-    const float r=c.r*(pressed?0.95f:1.0f);
-    const float blue=0.5f+0.5f*std::sin(phase);
-    if(special && ready) {
-        o.fill_circle(c.x,c.y,r*1.21f,
-                      {17,100,255,static_cast<uint8_t>(14+16*blue)},D);
-        o.stroke_circle(c.x,c.y,r*1.19f,r*0.060f,
-                        {16,110,255,static_cast<uint8_t>(95+55*blue)},D);
-        o.stroke_circle(c.x,c.y,r*1.125f,r*0.071f,
-                        {80,200,255,static_cast<uint8_t>(130+75*blue)},D);
+    // Three glass/enamel layers + thin chrome rims. Cheap host-side strokes,
+    // never a fullscreen blur/postprocess shader.
+    const float r=c.r*(pressed?0.955f:1.0f);
+    const float beat = 0.5f + 0.5f * std::sin(phase);
+    const auto A = [](float f) -> uint8_t {
+        return static_cast<uint8_t>(std::clamp(static_cast<int>(f),0,255));
+    };
+    if (special && ready) {
+        // Four concentric translucent rims produce a luminous blue halo,
+        // rather than the single barely visible line in the original HUD.
+        o.stroke_circle(c.x,c.y,r*1.245f,r*.040f,
+                        {13,106,255,A(42+32*beat)},D);
+        o.stroke_circle(c.x,c.y,r*1.186f,r*.052f,
+                        {17,135,255,A(102+60*beat)},D);
+        o.stroke_circle(c.x,c.y,r*1.130f,r*.048f,
+                        {65,194,255,A(143+75*beat)},D);
+        o.stroke_circle(c.x,c.y,r*1.080f,r*.035f,
+                        {175,248,255,A(175+75*beat)},D);
     } else {
-        o.stroke_circle(c.x,c.y,r*1.095f,r*0.045f,
-                        special ? Color{27,122,230,109}:Color{233,241,255,70},D);
+        o.stroke_circle(c.x,c.y,r*1.097f,r*.042f,
+                        special ? Color{55,135,222,80} :
+                                  Color{215,229,250,68},D);
     }
-    o.fill_circle(c.x,c.y,r*1.035f,{13,26,48,231},D);
-    o.stroke_circle(c.x,c.y,r*1.028f,r*0.035f,{185,215,244,173},D);
-    o.fill_circle(c.x,c.y,r*0.963f,
-                  pressed ? Color{47,100,143,230}:bottom,D);
-    // Simulated glossy enamel and curved internal rim: three low-alpha layers.
-    o.fill_circle(c.x,c.y-r*0.045f,r*0.845f,top,D);
-    o.fill_circle(c.x,c.y+r*0.135f,r*0.72f,bottom,D);
-    o.arc(c.x,c.y,r*0.90f,r*0.035f,0.82f,1.15f,
-          {227,246,255,158},D);
-    o.arc(c.x,c.y,r*0.87f,r*0.025f,0.20f,0.49f,
-          {106,163,213,108},D);
-    if(special && ready)
-        o.stroke_circle(c.x,c.y,r*0.983f,r*0.039f,
-                        {159,234,255,static_cast<uint8_t>(185+58*blue)},D);
+    // Dark metal frame, blue silver rim and glossy translucent body.
+    o.fill_circle(c.x,c.y,r*1.030f,{5,18,32,233},D);
+    o.stroke_circle(c.x,c.y,r*1.019f,r*.031f,
+                    {182,213,245,192},D);
+    o.fill_circle(c.x,c.y,r*.976f,
+                  pressed ? Color{51,103,143,232} : bottom,D);
+    o.fill_circle(c.x,c.y-r*.065f,r*.850f,
+                  {top.r,top.g,top.b,A(top.a*.85f)},D);
+    o.fill_circle(c.x,c.y+r*.115f,r*.742f,
+                  {bottom.r,bottom.g,bottom.b,A(bottom.a*.70f)},D);
+    // Reflected highlight at the top-left and low-key shadow opposite.
+    o.arc(c.x,c.y,r*.911f,r*.043f,.80f,1.10f,
+          {250,254,255,209},D);
+    o.arc(c.x,c.y,r*.864f,r*.024f,.16f,.50f,
+          {135,196,244,115},D);
+    o.arc(c.x,c.y,r*.955f,r*.022f,.35f,.62f,
+          {5,13,27,171},D);
+    if (special && ready)
+        o.stroke_circle(c.x,c.y,r*.980f,r*.030f,
+                        {182,251,255,A(200+55*beat)},D);
 }
 
 inline void ki_icon(HostOverlay& o, Circle b) {
@@ -140,44 +156,59 @@ inline void jump_icon(HostOverlay& o, Circle b) {
     seg(o,b,+.54f,-.43f,+.37f,-.24f,.090f,fig);
     seg(o,b,+.54f,-.43f,+.71f,-.24f,.090f,fig);
 }
+// Small filled triangle made from thin rectangles; no ImGui-only primitive,
+// no per-frame heap allocations, and works in both SDL and ImGui backends.
+inline void arrow(HostOverlay& o,float x,float y,float r,int dir) {
+    const Color white{249,253,255,245};
+    for(int i=0;i<8;i++) {
+        const float u=(i+.5f)/8.f;
+        const float width=r*(.020f+.132f*u);
+        const float longaxis=r*(-.205f+.44f*u);
+        const float thickness=r*.063f;
+        if(dir==0) // up
+            o.fill_rect(x-width,y+longaxis,2*width,thickness,0,white,D);
+        else if(dir==1) // down
+            o.fill_rect(x-width,y-longaxis,2*width,thickness,0,white,D);
+        else if(dir==2) // left
+            o.fill_rect(x+longaxis,y-width,thickness,2*width,0,white,D);
+        else
+            o.fill_rect(x-longaxis,y-width,thickness,2*width,0,white,D);
+    }
+}
 inline void dpad(HostOverlay& o, Circle d, uint16_t held) {
     const float x=d.x,y=d.y,r=d.r;
-    const float a=r*.41f;
-    // Wide glass ring, less opaque than the previous dark cross.
-    o.stroke_circle(x,y,r*1.32f,r*.028f,{120,189,250,77},D);
-    o.stroke_circle(x,y,r*1.23f,r*.026f,{177,212,255,66},D);
-    o.stroke_circle(x,y,r*1.13f,r*.028f,{171,205,247,67},D);
-    const struct Item {int bit;float cx,cy;} cells[]={
-        {6,x,y-r*.68f},{7,x,y+r*.68f},
-        {5,x-r*.68f,y},{4,x+r*.68f,y}
+    const float a=r*.405f;
+    // Airy translucent blue ring like the approved touch overlay.
+    o.fill_circle(x,y,r*1.28f,{38,111,175,16},D);
+    o.stroke_circle(x,y,r*1.337f,r*.034f,{54,152,248,105},D);
+    o.stroke_circle(x,y,r*1.294f,r*.020f,{184,232,255,115},D);
+    o.stroke_circle(x,y,r*1.225f,r*.021f,{111,197,252,78},D);
+    o.arc(x,y,r*1.325f,r*.029f,.79f,1.13f,
+          {218,248,255,168},D);
+
+    const struct Item {int bit;int direction;float cx,cy;} cells[] = {
+        {6,0,x,y-r*.67f},{7,1,x,y+r*.67f},
+        {5,2,x-r*.67f,y},{4,3,x+r*.67f,y}
     };
     for(const auto& q:cells) {
         const bool down=(held&(1u<<q.bit))!=0;
-        const Color frame=down?Color{94,210,255,230}:Color{196,220,247,190};
-        o.fill_rect(q.cx-a,q.cy-a,2*a,2*a,a*.34f,
-                    down?Color{31,90,155,178}:Color{18,35,59,144},D);
-        o.stroke_rect(q.cx-a,q.cy-a,2*a,2*a,a*.34f,
-                      r*.036f,frame,D);
-        o.fill_rect(q.cx-a*.83f,q.cy-a*.83f,1.66f*a,1.66f*a,
-                    a*.30f,down?Color{83,164,211,107}:Color{192,216,239,45},D);
-        const float v=r*.14f;
-        const Color arrow{242,249,255,244};
-        if(q.bit==6 || q.bit==7) {
-            const float dir=q.bit==6?-1.f:1.f;
-            line(o,q.cx-v,q.cy-dir*v*.3f,q.cx,q.cy+dir*v*.65f,
-                 r*.066f,arrow);
-            line(o,q.cx,q.cy+dir*v*.65f,q.cx+v,q.cy-dir*v*.3f,
-                 r*.066f,arrow);
-        } else {
-            const float dir=q.bit==5?-1.f:1.f;
-            line(o,q.cx-dir*v*.3f,q.cy-v,q.cx+dir*v*.65f,q.cy,
-                 r*.066f,arrow);
-            line(o,q.cx+dir*v*.65f,q.cy,q.cx-dir*v*.3f,q.cy+v,
-                 r*.066f,arrow);
-        }
+        const Color rim=down?Color{129,236,255,245}:Color{211,240,255,224};
+        // More transparent than the previous opaque navy squares: the GBA
+        // scenery remains visible behind all four directional controls.
+        o.fill_rect(q.cx-a,q.cy-a,2*a,2*a,a*.38f,
+                    down?Color{46,158,223,133}:
+                         Color{118,170,205,68},D);
+        o.stroke_rect(q.cx-a,q.cy-a,2*a,2*a,a*.38f,
+                      r*.050f,rim,D);
+        o.stroke_rect(q.cx-a*.915f,q.cy-a*.915f,1.83f*a,1.83f*a,
+                      a*.35f,r*.021f,{144,210,249,122},D);
+        o.fill_rect(q.cx-a*.84f,q.cy-a*.82f,1.68f*a,.34f*a,
+                    a*.22f,{240,252,255,down?98u:63u},D);
+        arrow(o,q.cx,q.cy,r,q.direction);
     }
-    o.fill_circle(x,y,r*.215f,{67,84,110,155},D);
-    o.stroke_circle(x,y,r*.205f,r*.035f,{183,207,234,102},D);
+    o.fill_circle(x,y,r*.220f,{50,92,132,138},D);
+    o.stroke_circle(x,y,r*.217f,r*.045f,{209,241,255,165},D);
+    o.fill_circle(x-r*.045f,y-r*.045f,r*.105f,{232,248,255,42},D);
 }
 
 inline void draw(HostOverlay& o,const Layout& l,uint16_t held,
