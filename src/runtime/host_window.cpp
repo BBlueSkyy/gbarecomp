@@ -2307,6 +2307,7 @@ void HostWindow::close() {
     runtime_imgui_shutdown(b);
 #endif
     destroy_sharp_texture(b);
+    if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
     if (b->texture)   SDL_DestroyTexture(b->texture);
     if (b->renderer)  SDL_DestroyRenderer(b->renderer);
     if (b->window)    SDL_DestroyWindow(b->window);
@@ -2534,6 +2535,33 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
 #if defined(__ANDROID__)
     const SDL_Rect destination{layout.x, layout.y, layout.width, layout.height};
     SDL_RenderCopy(b->renderer, b->texture, nullptr, &destination);
+    // Shader-like scanlines: one blended GPU draw, no CPU per-pixel pass.
+    // A 1px-wide pattern at the guest's vertical resolution is cached and
+    // stretched only over the game image (not the touch controls or rails).
+    if (b->scanline_effect && texture_h > 0) {
+        if (!b->scanline_texture ||
+            b->scanline_texture_height != texture_h) {
+            if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
+            b->scanline_texture = SDL_CreateTexture(b->renderer,
+                SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, 1, texture_h);
+            b->scanline_texture_height = b->scanline_texture ? texture_h : 0;
+            if (b->scanline_texture) {
+                const std::uint32_t alpha =
+                    b->scanline_effect == 1 ? 38u : 78u;
+                std::vector<std::uint32_t> pattern(static_cast<size_t>(texture_h));
+                for (int y = 0; y < texture_h; ++y)
+                    pattern[static_cast<size_t>(y)] = (y & 1) ? (alpha << 24) : 0u;
+                SDL_UpdateTexture(b->scanline_texture, nullptr, pattern.data(),
+                                  static_cast<int>(sizeof(std::uint32_t)));
+                SDL_SetTextureBlendMode(b->scanline_texture, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+                SDL_SetTextureScaleMode(b->scanline_texture, SDL_ScaleModeNearest);
+#endif
+            }
+        }
+        if (b->scanline_texture)
+            SDL_RenderCopy(b->renderer, b->scanline_texture, nullptr, &destination);
+    }
 #else
     if (!b->expanded_view && !b->resize_driven_view) {
         SDL_RenderCopy(b->renderer, b->texture, nullptr, nullptr);
@@ -2746,6 +2774,55 @@ void HostWindow::set_linear_filter(bool enabled) {
 
 bool HostWindow::linear_filter() const {
     return open_ && impl_ && static_cast<const Backend*>(impl_)->linear_filter;
+}
+
+void HostWindow::set_scanline_effect(int preset) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    preset = std::clamp(preset, 0, 2);
+    if (b->scanline_effect == preset) return;
+    b->scanline_effect = preset;
+    if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
+    b->scanline_texture = nullptr;
+    b->scanline_texture_height = 0;
+    b->display_preset_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::scanline_effect() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->scanline_effect : 0;
+}
+void HostWindow::set_color_profile(int preset) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    preset = std::clamp(preset, 0, 4);
+    if (b->color_profile == preset) return;
+    runtime::ColorSettings settings{};
+    switch (preset) {
+        case 1: settings.screen = runtime::ScreenKind::Backlit; break;
+        case 2: settings.screen = runtime::ScreenKind::Classic; break;
+        case 3: settings.screen = runtime::ScreenKind::Frontlit; break;
+        case 4: settings.screen = runtime::ScreenKind::Unlit; break;
+        default: break;
+    }
+    b->color_lut = std::make_unique<runtime::ColorLut>(settings);
+    b->color_profile = preset;
+    b->display_preset_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::color_profile() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->color_profile : 0;
+}
+void HostWindow::set_touch_pad_scale(int percent) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    percent = std::clamp(percent, 80, 120);
+    if (b->pad_scale_percent == percent) return;
+    b->pad_scale_percent = percent;
+    b->pad_scale_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::touch_pad_scale() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->pad_scale_percent : 100;
 }
 
 void HostWindow::set_audio_enabled(bool enabled) {
@@ -3436,6 +3513,12 @@ int  HostWindow::volume() const { return 100; }
 int  HostWindow::window_scale() const { return 1; }
 void HostWindow::set_linear_filter(bool /*enabled*/) {}
 bool HostWindow::linear_filter() const { return false; }
+void HostWindow::set_scanline_effect(int) {}
+int HostWindow::scanline_effect() const { return 0; }
+void HostWindow::set_color_profile(int) {}
+int HostWindow::color_profile() const { return 0; }
+void HostWindow::set_touch_pad_scale(int) {}
+int HostWindow::touch_pad_scale() const { return 100; }
 bool HostWindow::saved_audio_enhanced(bool& /*enabled*/) const { return false; }
 void HostWindow::save_audio_enhanced(bool /*enabled*/) {}
 void HostWindow::set_audio_enabled(bool /*enabled*/) {}
