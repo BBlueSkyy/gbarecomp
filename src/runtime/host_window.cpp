@@ -771,6 +771,19 @@ PadLayout compute_pad_layout(const Backend* b) {
         p.l = {};
         p.r = {};
     }
+    if (b->mobile_action_hud) {
+        // Rather than a movable gamepad icon in the lower-right, expose a
+        // slender neutral-grey tab at the upper safe edge. The larger
+        // touch hit slop below stays available while the pad is hidden.
+        // Ignore the old persisted toggle_x/y from other APK versions.
+        const float tw = 3.2f * mm, th = 9.5f * mm;
+        const float cx = right - tw * 0.5f - 0.6f * mm;
+        const float cy = top + 7.2f * mm;
+        p.toggle = {std::clamp(cx - tw * 0.5f,left,std::max(left,right-tw)),
+                    std::clamp(cy - th * 0.5f,top,std::max(top,bottom-th)),tw,th};
+        return p;
+    }
+    // Generic titles retain the old moveable toggle and its saved location.
     const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
     float cx = right - edge - tw * 0.5f;
     float cy = bottom - edge - th * 0.5f;
@@ -825,12 +838,10 @@ bool touch_input_enabled(const Backend* b) {
 }
 
 bool pad_toggle_available(const Backend* b) {
-    // The toggle is offered only when something other than the pad can drive
-    // the game; a pad-only title must never be left without controls.
-    // Title-specific action HUD already owns four gameplay controls.
-    // It must not display a floating hide button or intercept touches in
-    // that button's old rectangle. Keep the generic toggle for other games.
-    return b && !b->mobile_action_hud && b->touch_policy &&
+    // Only titles with another touch input path offer hiding the pad.
+    // Dragon Ball renders a slim fixed edge tab, not the floating gamepad
+    // icon. Generic titles retain the original movable visibility toggle.
+    return b && b->touch_policy &&
            (b->touch_controls || b->touch_emulation);
 }
 
@@ -2477,9 +2488,10 @@ void HostWindow::configure_mobile_action_hud(
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
     b->mobile_action_hud = enable;
-    // This title deliberately has no on-screen pad hide control. Keep the
-    // gameplay buttons reachable, even if an earlier APK saved them hidden.
-    if (enable && b->touch_controls) b->pad_visible = true;
+    // The new fixed edge tab can restore hidden controls, so a saved
+    // visibility choice is safe to honor instead of forcing the pad on.
+    if (enable && b->touch_controls && !b->pad_choice_saved)
+        b->pad_visible = true;
     b->special_meter_probe = enable ? probe : nullptr;
     b->special_ready = false;
     b->special_ready_streak = b->special_not_ready_streak = 0;
@@ -3046,10 +3058,8 @@ void HostWindow::set_touch_config_dir(const char* dir) {
             b->toggle_pos_saved = true;
         }
     });
-    // Config is loaded *after* configure_mobile_action_hud(). A legacy
-    // pad_visible=0 choice must not strand this title with no visible pad.
-    // Leave the saved config untouched for other games.
-    if (b->mobile_action_hud && b->touch_controls) b->pad_visible = true;
+    // Config is loaded after configure_mobile_action_hud(). Honor a
+    // previously hidden pad: the always-visible fixed edge tab restores it.
     ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Audio",
                      [b](const char* key, const char* val) {
         if (SDL_strcasecmp(key, "enhanced") == 0) {
