@@ -98,6 +98,16 @@ public:
     int  window_scale() const;
     void set_linear_filter(bool enabled);
     bool linear_filter() const;
+    // Android-friendly player presets; values are persisted in config.ini.
+    // Video effects are host-only: 0 off, 1 subtle scanlines, 2 strong.
+    void set_scanline_effect(int preset);
+    int scanline_effect() const;
+    // 0 raw, 1 backlit, 2 classic, 3 frontlit, 4 unlit.
+    void set_color_profile(int preset);
+    int color_profile() const;
+    // 80 / 100 / 120 percent, visual and touch hitboxes together.
+    void set_touch_pad_scale(int percent);
+    int touch_pad_scale() const;
     // The player's enhanced-audio (MP2K shadow) choice, remembered in
     // config.ini [Audio] next to [Touch]. saved_audio_enhanced() returns
     // false until the player has chosen.
