@@ -54,6 +54,25 @@ a costly shader. Both L and R specials glow only when the same shared gauge
 appears completely charged. Their actual availability/damage remains wholly
 controlled by the original game — the UI does not simulate or grant energy.
 
+## Second visual correction based on the actual installed APK
+
+The owner tested the first version on Moto G100; its D-pad was still dark and
+bulky, the arrows were thin chevrons, and the charge light never activated.
+This branch now uses lighter glass-tinted D-pad tiles, layered borders and
+filled triangular arrows; blue lighting has four concentric translucent neon
+rings only for charged R/Ki and L/staff. The punching and jumping buttons keep
+faint warm red and green borders without falsely indicating charged specials.
+
+**Root cause of absent charge glow found in the game's probe:** the old sample
+span x25..42 included white endcap pixels x41..42. The actual gauge's yellow
+charge interior is x24..39, so a full bar could only give 15/18 (83.3%) to a
+detector with a >=96% readiness requirement. The updated game-owned probe
+samples x24..39 and verifies fixed cap, silver edge, and lower black border,
+then applies a three-frame readiness/depletion debounce. On two prior Moto G100
+gameplay screenshots, this correctly classifies full (1.0) and empty (0.0).
+The new synthetic tests also cover partial, full, empty and invalid border.
+**No on-device build of the corrected version has yet been run.**
+
 ## Visual redesign to match the approved mobile mockup
 
 The initial vector proof-of-concept built only rudimentary circles and icons;
