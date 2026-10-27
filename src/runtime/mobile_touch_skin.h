@@ -203,7 +203,7 @@ inline void dpad(HostOverlay& o, Circle d, uint16_t held) {
         o.stroke_rect(q.cx-a*.915f,q.cy-a*.915f,1.83f*a,1.83f*a,
                       a*.35f,r*.021f,{144,210,249,122},D);
         o.fill_rect(q.cx-a*.84f,q.cy-a*.82f,1.68f*a,.34f*a,
-                    a*.22f,{240,252,255,down?98u:63u},D);
+                    a*.22f,{240,252,255,static_cast<uint8_t>(down?98:63)},D);
         arrow(o,q.cx,q.cy,r,q.direction);
     }
     o.fill_circle(x,y,r*.220f,{50,92,132,138},D);
