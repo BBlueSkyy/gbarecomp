@@ -1112,8 +1112,91 @@ void draw_touch_pad(Backend* b, HostOverlay& ov) {
         if (ov.text_supported())
             ov.text(c.x, c.y - 2.6f * mm, 5.2f * mm, label, text, OverlayAlign::Center, S);
     };
-    round_button(p.a, 0, {196, 52, 64, 190}, "A");
-    round_button(p.b, 1, {40, 120, 200, 190}, "B");
+    if (b->mobile_action_hud && p.ki.r > 0.0f) {
+        // Icons are host-drawn vector primitives, with no texture upload or
+        // per-frame allocation. The glow appears only on confirmed full gauge.
+        // Button pressed-state and special readiness are independent:
+        // holding R continues charging Ki as in the original GBA game.
+        const float clock = static_cast<float>(ov.host_ms());
+        const float pulse = b->special_ready
+            ? (0.5f + 0.5f * std::sin(clock * 0.0065f)) : 0.0f;
+        auto stroke = [&](float x0, float y0, float x1, float y1,
+                          float thickness, OverlayColor color) {
+            ov.line(x0, y0, x1, y1, thickness, color, S);
+        };
+        auto action = [&](const PadCircle& c, int bit, OverlayColor tint,
+                          bool special) {
+            const bool held_now = on(bit);
+            const float rad = c.r * (held_now ? 0.94f : 1.0f);
+            ov.fill_circle(c.x, c.y, rad, held_now
+                ? OverlayColor{68, 92, 145, 235} : tint, S);
+            // Two thin rings are cheaper than a blur or shader bloom.
+            ov.stroke_circle(c.x, c.y, rad, std::max(1.2f, 0.32f * mm),
+                             {207, 233, 255, 211}, S);
+            if (special && b->special_ready) {
+                ov.stroke_circle(c.x, c.y, rad + 0.60f * mm,
+                                 1.10f * mm,
+                                 {26, 129, 255, static_cast<uint8_t>(
+                                     90 + static_cast<int>(60 * pulse))}, S);
+                ov.stroke_circle(c.x, c.y, rad + 0.18f * mm,
+                                 0.62f * mm,
+                                 {106, 219, 255, static_cast<uint8_t>(
+                                     170 + static_cast<int>(72 * pulse))}, S);
+            }
+        };
+        // Jump: a leaping stick-figure silhouette + upward direction.
+        action(p.a, 0, {8, 90, 54, 171}, false);
+        {
+            const float x = p.a.x, y = p.a.y, r = p.a.r;
+            const OverlayColor c{233, 255, 230, 247};
+            ov.fill_circle(x - r * 0.17f, y - r * 0.25f, r * 0.13f, c, S);
+            stroke(x - r*0.1f, y-r*0.14f, x+r*0.13f, y+r*0.17f, r*0.10f, c);
+            stroke(x+r*0.13f, y+r*0.17f, x+r*0.40f, y+r*0.07f, r*0.10f, c);
+            stroke(x+r*0.13f, y+r*0.17f, x-r*0.08f, y+r*0.43f, r*0.10f, c);
+            stroke(x-r*0.02f, y-r*0.02f, x-r*0.38f, y+r*0.06f, r*0.09f, c);
+            stroke(x+r*0.06f, y-r*0.05f, x+r*0.26f, y-r*0.35f, r*0.09f, c);
+            stroke(x+r*0.48f, y-r*0.20f, x+r*0.48f, y-r*0.52f, r*0.08f, c);
+            stroke(x+r*0.48f, y-r*0.52f, x+r*0.34f, y-r*0.38f, r*0.08f, c);
+            stroke(x+r*0.48f, y-r*0.52f, x+r*0.61f, y-r*0.38f, r*0.08f, c);
+        }
+        // B: single martial-arts fist, outlined by three knuckles.
+        action(p.b, 1, {112, 18, 26, 183}, false);
+        {
+            const float x=p.b.x,y=p.b.y,r=p.b.r;
+            const OverlayColor skin{255, 201, 142, 241};
+            ov.fill_rect(x-r*.33f,y-r*.15f,r*.62f,r*.42f,r*.10f,skin,S);
+            for(int k=0;k<3;k++)
+                ov.fill_circle(x-r*.24f+k*r*.22f,y-r*.15f,r*.135f,skin,S);
+            stroke(x-r*.25f,y+r*.20f,x-r*.32f,y+r*.37f,r*.11f,skin);
+        }
+        // R: charging blue Ki / Kamehameha. L: the single Power Pole.
+        action(p.ki, 8, {9, 45, 112, 185}, true);
+        {
+            const float x=p.ki.x,y=p.ki.y,r=p.ki.r;
+            const OverlayColor blue{147, 239, 255, 245};
+            ov.fill_circle(x-r*.13f,y,r*.30f,{60,185,255,232},S);
+            ov.fill_circle(x-r*.17f,y,r*.18f,{239,255,255,255},S);
+            for(int i=-2;i<=2;i++) {
+                const float dy=i*r*.16f;
+                stroke(x+r*.05f,y+dy*.6f,
+                       x+r*(.48f-std::abs(i)*.07f),y+dy,
+                       r*.055f,blue);
+            }
+        }
+        action(p.pole, 9, {72, 41, 16, 180}, true);
+        {
+            const float x=p.pole.x,y=p.pole.y,r=p.pole.r;
+            const OverlayColor gold{252, 173, 85, 251};
+            stroke(x-r*.47f,y+r*.42f,x+r*.44f,y-r*.48f,r*.14f,
+                   {20, 7, 4, 242});
+            stroke(x-r*.43f,y+r*.39f,x+r*.40f,y-r*.44f,r*.09f,gold);
+            stroke(x-r*.20f,y+r*.17f,x-r*.02f,y-r*.01f,r*.04f,
+                   {255, 236, 155, 244});
+        }
+    } else {
+        round_button(p.a, 0, {196, 52, 64, 190}, "A");
+        round_button(p.b, 1, {40, 120, 200, 190}, "B");
+    }
 
     auto pill = [&](const PadRect& r, int bit, const char* text, float radius) {
         ov.fill_rect(r.x, r.y, r.w, r.h, radius, on(bit) ? pressed : backing, S);
@@ -1124,8 +1207,10 @@ void draw_touch_pad(Backend* b, HostOverlay& ov) {
                     OverlayAlign::Center, S);
         }
     };
-    pill(p.l, 9, "L", 2.0f * mm);
-    pill(p.r, 8, "R", 2.0f * mm);
+    if (!b->mobile_action_hud || p.ki.r == 0.0f) {
+        pill(p.l, 9, "L", 2.0f * mm);
+        pill(p.r, 8, "R", 2.0f * mm);
+    }
     pill(p.select, 2, "SELECT", p.select.h * 0.5f);
     pill(p.start, 3, "START", p.start.h * 0.5f);
 }
