@@ -187,7 +187,9 @@ not to replace the game framebuffer. The ROM-free visual smoke test now
 checks four idle keys, 20 outlined arrow sides, 48 rounded key-outline
 segments, a single highlighted key on Up, and no analog center circle.
 
-This branch predates the engine HALT merge. The **HALT/performance fix must
-be carried forward from engine main when preparing an Android integration
-build**; this Draft is not yet evidence of performance parity with the
-post-HALT main branch. No on-device FPS or screenshot verification yet.
+This integration branch is based directly on the HALT-fixed engine main
+(commit ff112660). It preserves the PR #10 HALT resume and DMA wake timing,
+PR #9 owned IRQ/SWI continuations, and the runtime memory/SWI optimizations.
+Only the host-side presentation changes are added, with 51 additive lines in
+runtime.cpp. The companion game Draft stays based on its HALT-fixed main.
+Actual touch-render FPS and visual appearance still require on-device tests.
