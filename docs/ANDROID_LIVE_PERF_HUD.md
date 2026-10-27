@@ -29,3 +29,22 @@ The old `GBARECOMP_FRAME_PHASE` CSV remains explicitly opt-in; the HUD works whe
 Host-clock reads (~160 scanlines/frame plus frame boundaries), ImGui text each presented frame, and a bridge instruction increment have measurable overhead. Use this APK for **classification of bottlenecks**, not a precise shipping FPS comparison. An update at a frame boundary cannot appear if the guest never reaches/presents a frame. The interpretation timer records only completed bridges; the live counter/ACTIVE marker distinguishes ongoing bridges. Nested guest device timing may overlap the bridge bucket.
 
 No Android APK was compiled or installed here; this is an opt-in, unmerged Draft pending one owner-run manual Codemagic build and visual confirmation. Do not merge it with the game/performance PRs or claim a gameplay speedup.
+
+
+## Follow-up: actual gameplay evidence and targeted hotspots
+
+Screenshot from the owner's Moto G100, first playable Goku stage:
+- **34.8 host FPS**, **58% effective GBA speed**.
+- **GUEST 20.2 ms/frame**, **BRIDGE DONE 15.4 ms/frame**, about **210 bridge calls/second**.
+- **1,431,418 bridged instructions/second**.
+- **RAM BRIDGE 0/s**, **PPU SCAN 2.7 ms/frame**, **HOST VIDEO 1.9 ms/frame**, **WAIT 6.4 ms/frame**.
+- **46 distinct dispatch-miss PCs** over the session.
+
+This directly establishes a substantial interpreter cost in this workload, although total bridge duration includes device work and nested guest processing. It does **not** establish which missing function(s) cause the cost or that all bridges come from ROM. RAM BRIDGE only classifies *entry addresses*, not all code indirectly executed inside a bridge. The user's diagnostic build already uses the first version of the HUD and must not be confused with the following hotspot refinement.
+
+The refined HUD adds:
+- **HOT 1/2/3**: most expensive *completed* interpreter bridge entry PCs over each ~1-second reporting interval, shown as hex PC, Thumb/ARM, inclusive elapsed milliseconds, calls and interpreted thousands of instructions. Nested bridges can overlap and are not additive.
+- **ACTIVE PC**: the currently active bridge entry PC, if any, helpful for a persistent bridge that has not returned yet. Value zero means no active entry at the sample point or an entry PC of zero.
+- Source-side per-PC accumulation occurs once per bridge completion; there is **no per-instruction clock read or map lookup**.
+
+Targeted next action: when the owner sends another screenshot from the **refined** build, locate the hottest PC(s), classify BIOS vs cart vs RAM and ARM/Thumb, compare them to the generated dispatch/native coverage and decide whether to fix static discovery, jump tables, resume entries or safe RAM templates. Do not regenerate enormous guest shards, change BIOS behavior, or enable a dynamic compiler without exact evidence. No game-speed fix is claimed for this diagnostic change.
