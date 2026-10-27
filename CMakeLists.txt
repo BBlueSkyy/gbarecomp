@@ -1101,6 +1101,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 target_link_gbarecomp_runtime_stack(swi_bridge_amplification)
 
+# Opt-in investigation: observes continuation/snapshot and masked-wake gaps.
+# A zero exit status means the observations reproduced, not HALT acceptance.
+add_executable(halt_continuation_probe EXCLUDE_FROM_ALL tests/runtime/halt_continuation_probe.cpp)
+target_link_gbarecomp_runtime_stack(halt_continuation_probe)
+
 
 add_gbarecomp_runtime_stack_test(high_resolution_tests tests/ppu/high_resolution_test.cpp)
 add_gbarecomp_runtime_stack_test(vertical_obj_tests tests/ppu/vertical_obj_test.cpp)
