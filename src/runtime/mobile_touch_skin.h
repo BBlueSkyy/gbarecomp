@@ -61,14 +61,23 @@ inline void bezel(HostOverlay& o, Circle c, Color top, Color bottom, bool presse
         // Charged glow is dynamic. Non-special punch/jump buttons keep
         // a faint red/green enamel rim as in the approved mobile mockup.
         const bool fist = !special && top.r > top.g;
-        const Color idle = special ? Color{55,135,222,78} :
-                          fist ? Color{255,88,103,140} :
-                                 Color{75,223,156,118};
-        o.stroke_circle(c.x,c.y,r*1.097f,r*.042f,idle,D);
-        if (!special)
-            o.stroke_circle(c.x,c.y,r*1.056f,r*.018f,
-                fist ? Color{255,190,168,130} :
-                       Color{166,255,217,118},D);
+        if (special) {
+            o.stroke_circle(c.x,c.y,r*1.097f,r*.042f,
+                            {55,135,222,78},D);
+        } else {
+            // Punch and jump have their own always-on *static* illuminated
+            // enamel rings in the user's references. They are separate
+            // from the blue, charge-dependent Power Pole / Ki pulses.
+            const Color aura = fist ? Color{255,70,113,90} :
+                                     Color{111,238,222,78};
+            const Color rim = fist ? Color{255,187,207,242} :
+                                    Color{218,255,247,235};
+            o.stroke_circle(c.x,c.y,r*1.156f,r*.031f,aura,D);
+            o.stroke_circle(c.x,c.y,r*1.096f,r*.056f,rim,D);
+            o.stroke_circle(c.x,c.y,r*1.058f,r*.017f,
+                    fist ? Color{255,116,141,181} :
+                           Color{159,255,228,163},D);
+        }
     }
     // Dark metal frame, blue silver rim and glossy translucent body.
     o.fill_circle(c.x,c.y,r*1.030f,{5,18,32,233},D);
@@ -211,13 +220,13 @@ inline void draw(HostOverlay& o,const Layout& l,uint16_t held,
     bezel(o,l.ki,{7,57,135,170},{7,24,72,228},
           (held&(1u<<8))!=0,true,ready,phase);
     ki_icon(o,l.ki);
-    bezel(o,l.fist,{114,27,31,139},{60,6,13,227},
+    bezel(o,l.fist,{175,37,45,159},{93,8,22,232},
           (held&(1u<<1))!=0,false,false,phase);
     fist_icon(o,l.fist);
     bezel(o,l.pole,{75,44,23,154},{32,20,13,230},
           (held&(1u<<9))!=0,true,ready,phase);
     staff_icon(o,l.pole);
-    bezel(o,l.jump,{14,93,65,149},{6,47,37,224},
+    bezel(o,l.jump,{30,117,83,160},{7,62,48,228},
           (held&(1u<<0))!=0,false,false,phase);
     jump_icon(o,l.jump);
 }
