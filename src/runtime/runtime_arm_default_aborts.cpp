@@ -350,16 +350,35 @@ extern "C" void runtime_perf_bridge_top_sample(RuntimePerfHotBridge output[3]) {
     }
 }
 extern "C" void runtime_perf_swi_top_sample(RuntimePerfSwiSite output[3]) {
-    for (unsigned j = 0; j < 3; ++j) output[j] = {};
+    // Aggregate by *SWI service number*, not merely the callsite.
+    // Otherwise three callsites of the same service can crowd out the
+    // actual second/third hottest services. Display the most costly caller
+    // for each grouped service as an additional clue.
+    struct Aggregate {
+        RuntimePerfSwiSite site{};
+        std::uint64_t biggest_callsite_ns = 0;
+    };
+    std::array<Aggregate, 256> per_service{};
     for (auto& [key, counters] : g_perf_swi_sites) {
         if (!counters.calls) continue;
-        RuntimePerfSwiSite item{};
-        item.number = static_cast<std::uint32_t>((key >> 33) & 0xFFu);
-        item.callsite = static_cast<std::uint32_t>((key >> 1) & 0xFFFFFFFFu);
-        item.thumb = static_cast<std::uint32_t>(key & 1u);
-        item.elapsed_ns = counters.elapsed_ns;
-        item.instructions = counters.instructions;
-        item.calls = counters.calls;
+        const auto number = static_cast<std::uint32_t>((key >> 33) & 0xFFu);
+        auto& dst = per_service[number];
+        dst.site.number = number;
+        dst.site.elapsed_ns += counters.elapsed_ns;
+        dst.site.instructions += counters.instructions;
+        dst.site.calls += counters.calls;
+        if (counters.elapsed_ns > dst.biggest_callsite_ns) {
+            dst.biggest_callsite_ns = counters.elapsed_ns;
+            dst.site.callsite =
+                static_cast<std::uint32_t>((key >> 1) & 0xFFFFFFFFu);
+            dst.site.thumb = static_cast<std::uint32_t>(key & 1u);
+        }
+        counters = {};  // reset window, keep source identity for next window
+    }
+    for (unsigned j = 0; j < 3; ++j) output[j] = {};
+    for (const auto& bin : per_service) {
+        const auto& item = bin.site;
+        if (!item.calls) continue;
         for (unsigned i = 0; i < 3; ++i) {
             if (item.elapsed_ns > output[i].elapsed_ns) {
                 for (unsigned k = 2; k > i; --k) output[k] = output[k-1];
@@ -367,7 +386,6 @@ extern "C" void runtime_perf_swi_top_sample(RuntimePerfSwiSite output[3]) {
                 break;
             }
         }
-        counters = {};
     }
 }
 extern "C" void runtime_perf_internal_pc_top_sample(
