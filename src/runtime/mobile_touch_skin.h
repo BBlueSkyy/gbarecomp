@@ -68,10 +68,10 @@ inline void bezel(HostOverlay& o, Circle c, Color top, Color bottom, bool presse
             // Punch and jump have their own always-on *static* illuminated
             // enamel rings in the user's references. They are separate
             // from the blue, charge-dependent Power Pole / Ki pulses.
-            const Color aura = fist ? Color{255,70,113,90} :
-                                     Color{111,238,222,78};
-            const Color rim = fist ? Color{255,187,207,242} :
-                                    Color{218,255,247,235};
+            const Color aura = fist ? Color{255,70,113,65} :
+                                     Color{111,238,222,60};
+            const Color rim = fist ? Color{255,187,207,157} :
+                                    Color{218,255,247,155};
             o.stroke_circle(c.x,c.y,r*1.156f,r*.031f,aura,D);
             o.stroke_circle(c.x,c.y,r*1.096f,r*.056f,rim,D);
             o.stroke_circle(c.x,c.y,r*1.058f,r*.017f,
@@ -80,22 +80,23 @@ inline void bezel(HostOverlay& o, Circle c, Color top, Color bottom, bool presse
         }
     }
     // Dark metal frame, blue silver rim and glossy translucent body.
-    o.fill_circle(c.x,c.y,r*1.030f,{5,18,32,233},D);
+    o.fill_circle(c.x,c.y,r*1.030f,{22,28,34,76},D);
     o.stroke_circle(c.x,c.y,r*1.019f,r*.031f,
-                    {182,213,245,192},D);
+                    {207,220,233,133},D);
     o.fill_circle(c.x,c.y,r*.976f,
-                  pressed ? Color{51,103,143,232} : bottom,D);
+                  pressed ? Color{93,117,141,148} :
+                            Color{bottom.r,bottom.g,bottom.b,A(bottom.a*.40f)},D);
     o.fill_circle(c.x,c.y-r*.065f,r*.850f,
-                  {top.r,top.g,top.b,A(top.a*.85f)},D);
+                  {top.r,top.g,top.b,A(top.a*.52f)},D);
     o.fill_circle(c.x,c.y+r*.115f,r*.742f,
-                  {bottom.r,bottom.g,bottom.b,A(bottom.a*.70f)},D);
+                  {bottom.r,bottom.g,bottom.b,A(bottom.a*.36f)},D);
     // Reflected highlight at the top-left and low-key shadow opposite.
     o.arc(c.x,c.y,r*.911f,r*.043f,.80f,1.10f,
-          {250,254,255,209},D);
+          {250,254,255,143},D);
     o.arc(c.x,c.y,r*.864f,r*.024f,.16f,.50f,
-          {135,196,244,115},D);
+          {173,198,214,85},D);
     o.arc(c.x,c.y,r*.955f,r*.022f,.35f,.62f,
-          {5,13,27,171},D);
+          {5,13,27,65},D);
     if (special && ready)
         o.stroke_circle(c.x,c.y,r*.980f,r*.030f,
                         {182,251,255,A(200+55*beat)},D);
