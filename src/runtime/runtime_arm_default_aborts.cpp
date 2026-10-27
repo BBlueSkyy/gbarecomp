@@ -711,6 +711,8 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
     // that frame. Explicit forced-stop validation retains its subtree contract.
     const bool swi_vector = forced_stop_pc == 0u && entry_pc == 0x00000008u &&
                             (g_cpu.cpsr & 0x1Fu) == 0x13u;
+    const auto entry_swi_depth = forced_stop_pc == 0u && entry_pc < 0x4000u
+        ? gbarecomp::runtime_swi_depth() : 0u;
     bool swi_returned = false;
 
     // IRQ-continuation mode: bridging a dispatch miss while an IRQ handler is in
@@ -935,10 +937,12 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
             }
         }
 
-        if (swi_vector && r == armv4t::Interpreter::Result::ExceptionReturn &&
-            old_mode == 0x13u) {
-            swi_returned = true;
-            break;
+        if ((swi_vector || entry_swi_depth) &&
+            r == armv4t::Interpreter::Result::ExceptionReturn && old_mode == 0x13u) {
+            if (swi_vector || gbarecomp::runtime_swi_depth() < entry_swi_depth) {
+                swi_returned = true;
+                break;
+            }
         }
 
         if (!irq_cont && (cpu.R[15] & ~1u) == stop_pc) break;

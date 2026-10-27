@@ -11,6 +11,7 @@ struct RuntimeSwiContinuation {
     std::uint32_t return_pc = 0;
 };
 constexpr std::size_t kRuntimeSwiLimit = 64;
+constexpr std::size_t kRuntimeIrqLimit = 1024;
 // Host exception metadata that used to exist only in runtime_irq's C++ frame.
 // Kept separate from the guest's banked SPSRs/registers in ArmCpuState.
 struct RuntimeIrqContinuation {
@@ -22,7 +23,9 @@ struct RuntimeIrqContinuation {
 
 // Mutable execution state for one guest. The legacy C ABI remains a bound
 // execution window, so generated functions can be shared without rewriting
-// register accesses. Binding/capturing is legal only outside native dispatch.
+// register accesses. Binding/restoring is legal only outside native dispatch.
+// Bind the destination owner BEFORE restoring another machine's values: restore
+// updates both the live window and that owner's IRQ vector. Capture is deep.
 struct RuntimeArmContext {
     ArmCpuState cpu{};
     std::vector<std::uint32_t> returns;
@@ -54,13 +57,24 @@ struct RuntimeArmContext {
 
 void runtime_capture_arm_context(RuntimeArmContext&);
 void runtime_restore_arm_context(const RuntimeArmContext&);
+// Value-only validation; does not bind pointers or change the execution window.
+void runtime_validate_arm_context(const RuntimeArmContext&);
 void runtime_capture_swi_context(std::vector<RuntimeSwiContinuation>&);
 void runtime_restore_swi_context(const std::vector<RuntimeSwiContinuation>&);
+std::uint32_t runtime_swi_depth();
 // Enables exception continuations for the duration of a dispatch, independently
 // of the legacy single-machine runner. The owner catches RuntimeDispatchYield
 // only after normal C++ unwinding, then captures the context.
 void runtime_set_resumable_context(RuntimeArmContext*);
 bool runtime_has_resumable_context();
+// Common runner: owns the same continuation values but keeps synchronous IRQ
+// completion/timing. Binding is trusted host wiring, never snapshot payload.
+void runtime_set_owned_context(RuntimeArmContext*);
+RuntimeArmContext* runtime_owned_context();
+// Resume an already-entered IRQ at its current PC, using owned frame data.
+// Also handles an iret completed before a clean dispatch boundary was saved.
+void runtime_resume_irq();
+bool runtime_irq_driver_active();
 struct RuntimeDispatchYield {};
 // Generated calls already propagate an interrupted PC back to the dispatcher.
 // Ordinary scheduler yields may use that return path, preserving guest return
