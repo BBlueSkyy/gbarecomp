@@ -193,3 +193,22 @@ PR #9 owned IRQ/SWI continuations, and the runtime memory/SWI optimizations.
 Only the host-side presentation changes are added, with 51 additive lines in
 runtime.cpp. The companion game Draft stays based on its HALT-fixed main.
 Actual touch-render FPS and visual appearance still require on-device tests.
+
+## Unobtrusive pad visibility edge-tab (revision from actual APK screenshot)
+
+The owner rejected the floating dark gamepad-glyph toggle previously seen
+at the lower-right, circled in the Android screenshot. Replaced **for this
+title only** with a narrow grey translucent **fixed top-right edge tab**:
+3.2 mm by 9.5 mm, located within Android safe insets, with a small chevron
+pointing outward to hide the virtual pad, inward to restore it.
+
+A slightly expanded hit region (2 mm on all sides) makes it tappable without
+enlarging the visible artwork. The tab is still drawn with the virtual pad
+hidden; a prior `pad_visible=0` setting can no longer strand the player
+because the tab remains accessible. Showing/hiding is saved in the existing
+`config.ini [Touch]` format. No draggable icon, no old saved toggle position,
+and no gameplay button mapping or special-meter changes.
+
+Other game profiles keep their previous draggable gamepad toggle. The
+engine's merged HALT/DMA performance path remains unchanged. Visual/functional
+testing on the Moto G100 and a new Android APK build are still pending.
