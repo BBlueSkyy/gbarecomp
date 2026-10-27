@@ -12,6 +12,9 @@
 #include "symbol_lookup.h"
 
 #include <cstdio>
+#if defined(GBARECOMP_PERF_HUD)
+#include <chrono>
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -53,6 +56,30 @@ extern "C" const unsigned kBiosDispatchTableLen;
 // healed native overlay ran. armv4t must not depend on the runtime lib, so the
 // link is a plain extern "C" symbol, mirroring runtime_dispatch_miss.
 extern "C" int overlay_try_dispatch(uint32_t pc, int thumb);
+#if defined(GBARECOMP_PERF_HUD)
+// Implemented by the opt-in HUD inside gbarecomp_runtime; absent in ordinary
+// engine/library builds. No new dependency in production.
+extern "C" void runtime_perf_note_swi(uint32_t, uint32_t, uint32_t);
+extern "C" unsigned g_perf_bridge_active(void);
+extern "C" unsigned long long g_perf_irq_in_bridge_ns = 0;
+namespace {
+thread_local unsigned perf_irq_nesting = 0;
+struct PerfIrqScope {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point start = Clock::now();
+    const bool outer = (++perf_irq_nesting == 1);
+    const bool bridged = (g_perf_bridge_active() != 0);
+    ~PerfIrqScope() {
+        --perf_irq_nesting;
+        if (outer && bridged) {
+            g_perf_irq_in_bridge_ns += static_cast<unsigned long long>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    Clock::now() - start).count());
+        }
+    }
+};
+} // namespace
+#endif
 
 // ── CPU state ──────────────────────────────────────────────────────
 
@@ -1632,6 +1659,13 @@ bool swi_enter(uint32_t swi_imm) {
     // dispatch (runtime_swi / runtime_swi_tail below) so the push always
     // pairs with this SWI's SVC entry.
     const bool swi_from_thumb = (saved_cpsr & CPSR_T_BIT) != 0;
+#if defined(GBARECOMP_PERF_HUD)
+    const uint32_t number = swi_from_thumb
+        ? (swi_imm & 0xFFu) : ((swi_imm >> 16) & 0xFFu);
+    runtime_perf_note_swi(
+        number, return_address - (swi_from_thumb ? 2u : 4u),
+        swi_from_thumb ? 1u : 0u);
+#endif
     swi_ledger_push(return_address,
                     return_address - (swi_from_thumb ? 2u : 4u));
     return true;
@@ -1674,6 +1708,9 @@ extern "C" unsigned long long g_runtime_irq_max_depth = 0;
 extern "C" uint32_t      g_irq_iret_depth = 0;
 
 extern "C" void runtime_irq(uint32_t return_address) {
+#if defined(GBARECOMP_PERF_HUD)
+    PerfIrqScope perf_irq_scope;
+#endif
     ++g_runtime_irq_entries;
     ++g_irq_nest_depth;
     if (g_irq_nest_depth > g_runtime_irq_max_depth)
