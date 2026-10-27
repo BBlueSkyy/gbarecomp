@@ -125,8 +125,8 @@ void inspect_masked_wake() {
         const auto pc = g_cpu.R[15];
         runtime_tick(1);
         const bool remains_halted = f.bus->io().halted();
-        check(remains_halted && g_cpu.R[15] == pc && g_runtime_cycles == 1,
-              "probe observes existing legacy masked-wake behavior without CPU execution");
+        check(!remains_halted && g_cpu.R[15] == pc && g_runtime_cycles == 8,
+              "enabled source wakes through seven-cycle window despite delivery mask");
         std::printf("masked_wake IE&IF=%04x IME=%u CPSR.I=%u halted=%u cycles=%llu\n",
                     f.bus->io().ie() & f.bus->io().if_reg(), ime, masked,
                     remains_halted, g_runtime_cycles);

@@ -2257,14 +2257,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     bool host_paused = false;
 
     auto pump_idle = [&](uint32_t max_cycles) -> uint32_t {
-        uint32_t chunk = ppu.cycles_until_next_event();
-        uint32_t until_timer = bus.io().cycles_until_next_timer_event();
-        uint32_t until_sample = bus.audio().cycles_until_next_sample();
-        if (until_timer < chunk) chunk = until_timer;
-        if (until_sample < chunk) chunk = until_sample;
-        if (chunk == 0 || chunk == 0xFFFFFFFFu) chunk = 1;
-        if (chunk > max_cycles) chunk = max_cycles;
-        runtime_tick(chunk);
+        const uint32_t chunk = runtime_pump_idle(max_cycles);
         cycles_elapsed += chunk;
         last_step_cycles += chunk;
         return chunk;
@@ -2351,6 +2344,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             // All guest residue belongs to execution_context. A future
             // suspension may unwind native callers without cancelling BLs.
             runtime_call_stack_restore(runtime_call_stack_data(), runtime_call_stack_depth());
+            runtime_set_return_yield(false); // unwind is complete; idle IRQs may dispatch
         }
         ++taken;
         sync_frame_counter();

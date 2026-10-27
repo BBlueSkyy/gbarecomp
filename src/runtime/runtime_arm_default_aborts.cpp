@@ -835,6 +835,16 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
         const bool was_thumb = cpu.thumb;
         const std::uint32_t old_mode = cpu.cpsr.mode;
         g_cpu.R[15] = pc;  // store_interp already set this; explicit for clarity
+        // A HALTCNT store has completed (including its tick), but no next
+        // instruction may execute until the runner's idle pump wakes the CPU.
+        // This is suspension, not this subtree's return: skip frame cleanup.
+        if (bus->io().halted()) {
+            if (pc < 0x4000u) bus->latch_bios_prefetch(pc, was_thumb);
+            g_interp_insns += bridged_insns;
+            if (max_instrs != 0u) return 0; // unfinished bounded validation pass
+            gbarecomp::runtime_suspend_dispatch();
+            return 0;
+        }
         // The bridge has no generated prologue, so it owns the entry decision.
         // Do this before fetch/fingerprint/timing. A handled callback authored
         // g_cpu's return state and replaces the entire bridged subtree.
@@ -936,6 +946,10 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
                         static_cast<std::uint32_t>(call_nest.size());
             }
         }
+
+        // HALT wins over a coincident stop address/static entry/iret. The
+        // next loop boundary suspends without running normal return cleanup.
+        if (bus->io().halted()) continue;
 
         if ((swi_vector || entry_swi_depth) &&
             r == armv4t::Interpreter::Result::ExceptionReturn && old_mode == 0x13u) {
@@ -1162,7 +1176,9 @@ extern "C" void runtime_force_interp_step(void) {
     // BIOS instruction. On a yield, return without executing (step_once re-enters
     // next iteration), exactly as the generated function returns to the runner.
     g_runtime_force_interp_step_active = 1;
-    const bool should_yield = runtime_should_yield();
+    bool should_yield;
+    try { should_yield = runtime_should_yield(); }
+    catch (...) { g_runtime_force_interp_step_active = 0; throw; }
     g_runtime_force_interp_step_active = 0;
     if (should_yield) return;
 
