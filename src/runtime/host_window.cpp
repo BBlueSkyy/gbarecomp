@@ -1185,6 +1185,29 @@ void draw_pad_toggle(Backend* b, HostOverlay& ov) {
     const PadRect& r = p.toggle;
     bool held = false;
     for (const auto& t : b->touches) held = held || (t.active && t.toggle);
+    if (b->mobile_action_hud) {
+        // Neutral, nearly transparent edge grip: one inward/outward
+        // chevron, not a floating gamepad glyph or persistent neon ring.
+        // Right-chevron hides; left-chevron restores.
+        const auto S = OverlaySpace::Drawable;
+        ov.fill_rect(r.x,r.y,r.w,r.h,r.w*0.5f,
+             held ? OverlayColor{142,153,167,135}
+                  : OverlayColor{74,83,94,58},S);
+        ov.stroke_rect(r.x,r.y,r.w,r.h,r.w*0.5f,
+             std::max(1.0f,b->px_per_mm*.11f),
+             held ? OverlayColor{237,244,248,183}
+                  : OverlayColor{191,201,213,112},S);
+        const float cx=r.x+r.w*.50f, cy=r.y+r.h*.50f;
+        const float tip = r.w*.23f;
+        const float dy = r.h*.14f;
+        const float dir=b->pad_visible ? 1.f : -1.f;
+        const OverlayColor c = held ? OverlayColor{246,250,255,222}
+                                    : OverlayColor{214,223,232,164};
+        const float stroke = std::max(1.2f,b->px_per_mm*.22f);
+        ov.line(cx-dir*tip,cy-dy,cx+dir*tip,cy,stroke,c,S);
+        ov.line(cx+dir*tip,cy,cx-dir*tip,cy+dy,stroke,c,S);
+        return;
+    }
     const OverlayColor bg = held ? OverlayColor{80, 210, 255, 170}
                           : b->pad_visible ? OverlayColor{255, 214, 74, 120}
                                            : OverlayColor{20, 26, 38, 110};
@@ -3364,8 +3387,15 @@ HostWindow::Events HostWindow::pump() {
                 } else if (touch->routed) {
                     route(e.type == SDL_FINGERUP ? TouchPhase::Up : TouchPhase::Move);
                 } else if (touch->toggle) {
-                    // Drag beyond the tap slop repositions the toggle; a tap
-                    // shows/hides the pad.
+                    // Dragon Ball's edge tab is fixed. Never drag it into the
+                    // scene; a release in its expanded hit area toggles the
+                    // controls without modifying their game input regions.
+                    if (b->mobile_action_hud) {
+                        if (e.type == SDL_FINGERUP &&
+                            pad.toggle.contains(px,py,2.0f*b->px_per_mm))
+                            set_touch_pad_visible(!b->pad_visible);
+                    } else {
+                    // Generic games keep the draggable toggle.
                     const float slop = 2.5f * b->px_per_mm;
                     const float mx = px - touch->start_x, my = py - touch->start_y;
                     if (!touch->toggle_dragging && mx * mx + my * my > slop * slop)
@@ -3384,6 +3414,7 @@ HostWindow::Events HostWindow::pump() {
                                pad.toggle.contains(px, py, 2.0f * b->px_per_mm)) {
                         set_touch_pad_visible(!b->pad_visible);
                     }
+                    } // generic draggable toggle
                 }
                 if (e.type == SDL_FINGERUP) *touch = {};
             }
