@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include "host_overlay.h"
+#include "mobile_reference_icons.h"
 
 namespace gbarecomp::mobile_skin {
 
@@ -109,21 +110,9 @@ inline void ki_icon(HostOverlay& o, Circle b) {
     o.arc(b.x-.20f*b.r,b.y,b.r*.39f,b.r*.055f,.56f,.94f,light,D);
 }
 
+// Icon traced from the user-supplied reference, rather than a few rectangles.
 inline void fist_icon(HostOverlay& o, Circle b) {
-    const Color shadow{84,30,18,236}, skin{255,195,132,254},
-                highlight{255,232,175,251};
-    // Wrist and folded thumb, outlined knuckles, lighter top facets.
-    round(o,b,-.16f,+.12f,.43f,.38f,.13f,shadow);
-    round(o,b,-.12f,+.12f,.34f,.31f,.11f,skin);
-    round(o,b,-.43f,-.17f,.85f,.46f,.16f,shadow);
-    round(o,b,-.38f,-.20f,.75f,.43f,.15f,skin);
-    for(int n=0;n<4;n++) {
-        const float x=-.32f+n*.205f;
-        round(o,b,x,-.30f,.185f,.23f,.10f,shadow);
-        round(o,b,x+.012f,-.285f,.155f,.20f,.09f,highlight);
-    }
-    round(o,b,-.30f,+.04f,.29f,.22f,.08f,{227,135,84,252});
-    seg(o,b,-.10f,.08f,.27f,.08f,.025f,{151,78,48,185});
+    mobile_reference::draw_fist(o,b.x,b.y,b.r);
 }
 
 inline void staff_icon(HostOverlay& o, Circle b) {
@@ -142,28 +131,11 @@ inline void staff_icon(HostOverlay& o, Circle b) {
             .032f,{116,32,9,220});
     }
 }
+// Real jumping silhouette and arrow contours from the selected reference.
 inline void jump_icon(HostOverlay& o, Circle b) {
-    const Color fig{233,255,243,252}, shade{120,224,173,208};
-    // Stylised martial artist with spiky hair and dynamically bent legs.
-    orb(o,b,-.22f,-.29f,.157f,fig);
-    const float spikes[][4]={
-        {-.34f,-.40f,-.43f,-.65f},{-.20f,-.42f,-.22f,-.67f},
-        {-.12f,-.40f,+.01f,-.60f},{-.36f,-.30f,-.53f,-.32f}};
-    for(const auto& a:spikes) seg(o,b,a[0],a[1],a[2],a[3],.085f,fig);
-    seg(o,b,-.17f,-.17f,+.04f,+.14f,.23f,shade);
-    seg(o,b,-.16f,-.18f,+.08f,+.14f,.165f,fig);
-    // Raised fist; leg in the air and a trailing leg below.
-    seg(o,b,-.12f,-.09f,+.23f,-.39f,.11f,fig);
-    orb(o,b,+.26f,-.42f,.094f,fig);
-    seg(o,b,+.06f,+.10f,+.34f,+.28f,.13f,fig);
-    seg(o,b,+.34f,+.28f,+.52f,+.11f,.115f,fig);
-    seg(o,b,+.02f,+.09f,-.22f,+.47f,.14f,fig);
-    seg(o,b,-.22f,+.47f,-.45f,+.55f,.11f,fig);
-    // Thick upward arrow at the right, like the approved image.
-    seg(o,b,+.54f,+.15f,+.54f,-.43f,.105f,fig);
-    seg(o,b,+.54f,-.43f,+.37f,-.24f,.090f,fig);
-    seg(o,b,+.54f,-.43f,+.71f,-.24f,.090f,fig);
+    mobile_reference::draw_jump(o,b.x,b.y,b.r);
 }
+
 // Small filled triangle made from thin rectangles; no ImGui-only primitive,
 // no per-frame heap allocations, and works in both SDL and ImGui backends.
 inline void arrow(HostOverlay& o,float x,float y,float r,int dir) {
