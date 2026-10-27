@@ -32,6 +32,8 @@
 #include "gba_rom_header.h"
 #include "host_platform.h"
 #include "host_window.h"
+#include "host_overlay.h"
+#include "runtime_perf_hot.h"
 #include "touch_input.h"
 #include "runtime_arm.h"
 #include "runtime_bus_bridge.h"
@@ -112,7 +114,58 @@ void runtime_set_vblank_input_hook(std::function<void()>);
 #define GBARECOMP_DEFAULT_DEBUG_PORT 0
 #endif
 
+#if defined(GBARECOMP_PERF_HUD)
+extern "C" unsigned long long g_prof_scanline_ns;
+extern "C" unsigned long long g_perf_bridge_ns;
+extern "C" unsigned long long g_perf_bridge_calls;
+extern "C" unsigned long long g_perf_ram_bridge_calls;
+extern "C" unsigned long long g_perf_bridge_insns_live;
+extern "C" unsigned g_perf_bridge_active(void);
+#endif
+
 namespace {
+#if defined(GBARECOMP_PERF_HUD)
+// Opt-in game-specific diagnostics; this is host chrome only. The underlying
+// 240x160 guest framebuffer, saved states and frame hashes remain untouched.
+// Callback runs on the rendering/guest thread, so these strings need no locks.
+struct LivePerfHud {
+    void (*previous_overlay)(gbarecomp::HostOverlay*) = nullptr;
+    char lines[10][128] = {
+        "DRAGON BALL | LIVE PERFORMANCE",
+        "Collecting first second of frame samples...",
+        "GUEST: -- | VIDEO: --",
+        "BRIDGE: -- | INTERP: --",
+        "PPU SCAN: -- | RAM BRIDGES: --",
+        "AUDIO: -- | INPUT: -- | WAIT: --",
+        "Counters update every ~1 second.",
+        "HOT 1: waiting for data...",
+        "HOT 2: waiting for data...",
+        "HOT 3: waiting for data..."
+    };
+};
+LivePerfHud g_live_perf_hud;
+
+void draw_live_perf_hud(gbarecomp::HostOverlay* ov) {
+    if (!ov) return;
+    if (g_live_perf_hud.previous_overlay)
+        g_live_perf_hud.previous_overlay(ov);
+    if (!ov->text_supported()) return;
+    const auto safe = ov->safe_insets();
+    const float x = 16.0f + static_cast<float>(safe.left);
+    const float y = 10.0f + static_cast<float>(safe.top);
+    const auto space = gbarecomp::OverlaySpace::Drawable;
+    ov->fill_rect(x, y, 980.0f, 319.0f, 9.0f,
+                  {4, 11, 22, 220}, space);
+    for (int row = 0; row < 10; ++row) {
+        const gbarecomp::OverlayColor color =
+            row == 0 ? gbarecomp::OverlayColor{117, 226, 255, 255}
+                     : gbarecomp::OverlayColor{250, 250, 250, 255};
+        ov->text(x + 12.0f, y + 10.0f + 29.0f * row,
+                 23.0f, color, g_live_perf_hud.lines[row],
+                 gbarecomp::OverlayAlign::Left, space);
+    }
+}
+#endif
 // Host light level for the solar sensor, read once per ADC conversion.
 // 0 = darkest, 255 = full sun; gba_solar.h owns the inversion to the
 // comparator threshold so the polarity lives in exactly one place.
@@ -2935,13 +2988,29 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         uint64_t prev_exit_ns = 0;
         unsigned long long prev_compile_ns = 0;
         std::string dump_path;
+#if defined(GBARECOMP_PERF_HUD)
+        uint64_t hud_start_ns = 0;
+        uint64_t hud_frames = 0;
+        uint64_t hud_guest_us = 0, hud_render_us = 0, hud_present_us = 0;
+        uint64_t hud_audio_us = 0, hud_pump_us = 0, hud_pacer_us = 0;
+        uint64_t hud_prev_scan_ns = 0, hud_prev_bridge_ns = 0;
+        uint64_t hud_prev_interp = 0, hud_prev_bridges = 0, hud_prev_ram = 0;
+        uint64_t hud_prev_cycles = 0;
+#endif
         FramePhaseRing() {
             const char* p = std::getenv("GBARECOMP_FRAME_PHASE");
-            if (!p || !*p) return;
-            dump_path = p;
-            ring.resize(kSize);
+            if (p && *p) {
+                dump_path = p;
+                ring.resize(kSize);
+            }
         }
-        bool active() const { return !dump_path.empty(); }
+        bool active() const {
+#if defined(GBARECOMP_PERF_HUD)
+            return true;
+#else
+            return !dump_path.empty();
+#endif
+        }
         static uint64_t now_ns() {
             return static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2967,11 +3036,104 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 (cc - prev_compile_ns) / 1000ull);
             prev_compile_ns = cc;
             prev_exit_ns = t5;
-            ring[total % kSize] = s;
+            if (!ring.empty()) ring[total % kSize] = s;
             ++total;
+#if defined(GBARECOMP_PERF_HUD)
+            if (!hud_start_ns) {
+                hud_start_ns = t5;
+                hud_prev_scan_ns = g_prof_scanline_ns;
+                hud_prev_bridge_ns = g_perf_bridge_ns;
+                hud_prev_interp = g_perf_bridge_insns_live;
+                hud_prev_bridges = g_perf_bridge_calls;
+                hud_prev_ram = g_perf_ram_bridge_calls;
+                hud_prev_cycles = g_runtime_cycles;
+                return;
+            }
+            ++hud_frames;
+            hud_guest_us += s.guest_us;
+            hud_render_us += s.render_us;
+            hud_present_us += s.present_us;
+            hud_audio_us += s.audio_us;
+            hud_pump_us += s.pump_us;
+            hud_pacer_us += s.pacer_us;
+            const uint64_t elapsed_ns = t5 - hud_start_ns;
+            if (elapsed_ns >= 1000000000ull && hud_frames != 0) {
+                const double ms_per_us = 0.001 / static_cast<double>(hud_frames);
+                const double ms_per_ns = 0.000001 / static_cast<double>(hud_frames);
+                const double elapsed_s = static_cast<double>(elapsed_ns) / 1e9;
+                const double fps = static_cast<double>(hud_frames) / elapsed_s;
+                const uint64_t interp = g_perf_bridge_insns_live;
+                const uint64_t bridges = g_perf_bridge_calls;
+                const uint64_t ram = g_perf_ram_bridge_calls;
+                const uint64_t scan_ns = g_prof_scanline_ns;
+                const uint64_t bridge_ns = g_perf_bridge_ns;
+                const uint64_t guest_cycles = g_runtime_cycles;
+                RuntimePerfHotBridge hot_sites[3]{};
+                runtime_perf_bridge_top_sample(hot_sites);
+                const double speed_percent =
+                    (guest_cycles - hud_prev_cycles) / elapsed_s / 16777216.0 * 100.0;
+                auto& lines = g_live_perf_hud.lines;
+                std::snprintf(lines[0], sizeof(lines[0]),
+                              "DRAGON BALL | %.1f FPS | GBA SPEED %.0f%%",
+                              fps, speed_percent);
+                std::snprintf(lines[1], sizeof(lines[1]),
+                              "GUEST %.1f ms  |  HOST VIDEO %.1f ms",
+                              hud_guest_us * ms_per_us,
+                              (hud_render_us + hud_present_us) * ms_per_us);
+                std::snprintf(lines[2], sizeof(lines[2]),
+                              "BRIDGE DONE %.1f ms/frame | %llu calls/s %s",
+                              (bridge_ns - hud_prev_bridge_ns) * ms_per_ns,
+                              static_cast<unsigned long long>(
+                                  (bridges - hud_prev_bridges) / elapsed_s),
+                              g_perf_bridge_active() ? "| ACTIVE" : "");
+                std::snprintf(lines[3], sizeof(lines[3]),
+                              "BRIDGED %llu instr/s  |  RAM BRIDGE %llu/s",
+                              static_cast<unsigned long long>(
+                                  (interp - hud_prev_interp) / elapsed_s),
+                              static_cast<unsigned long long>(
+                                  (ram - hud_prev_ram) / elapsed_s));
+                std::snprintf(lines[4], sizeof(lines[4]),
+                              "PPU SCAN %.1f ms/frame (overlaps BRIDGE)",
+                              (scan_ns - hud_prev_scan_ns) * ms_per_ns);
+                std::snprintf(lines[5], sizeof(lines[5]),
+                              "AUDIO %.1f ms  INPUT %.1f ms  WAIT %.1f ms",
+                              hud_audio_us * ms_per_us, hud_pump_us * ms_per_us,
+                              hud_pacer_us * ms_per_us);
+                std::snprintf(lines[6], sizeof(lines[6]),
+                              "DISPATCH MISSES %u (total) | ACTIVE PC %08X",
+                              gbarecomp::self_heal_distinct_misses(),
+                              runtime_perf_bridge_active_pc());
+                for (unsigned rank = 0; rank < 3; ++rank) {
+                    const auto& h = hot_sites[rank];
+                    if (h.calls) {
+                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
+                                      "HOT %u  %08X %c | %.1f ms | %llu calls | %llu k instr",
+                                      rank + 1, h.pc, h.thumb ? 'T' : 'A',
+                                      h.elapsed_ns / 1000000.0,
+                                      static_cast<unsigned long long>(h.calls),
+                                      static_cast<unsigned long long>(
+                                          h.instructions / 1000));
+                    } else {
+                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
+                                      "HOT %u  no completed bridge this second", rank + 1);
+                    }
+                }
+                hud_start_ns = t5;
+                hud_frames = 0;
+                hud_guest_us = hud_render_us = hud_present_us = 0;
+                hud_audio_us = hud_pump_us = hud_pacer_us = 0;
+                hud_prev_scan_ns = scan_ns;
+                hud_prev_bridge_ns = bridge_ns;
+                hud_prev_interp = interp;
+                hud_prev_bridges = bridges;
+                hud_prev_ram = ram;
+                hud_prev_cycles = guest_cycles;
+            }
+#endif
         }
         void dump() const {
-            if (!active() || total == 0) return;
+            // The on-screen HUD never requires a CSV path or an on-exit file.
+            if (dump_path.empty() || total == 0) return;
             std::FILE* f = std::fopen(dump_path.c_str(), "w");
             if (!f) return;
             std::fprintf(f, "frame,guest_us,render_us,present_us,audio_us,"
@@ -3190,7 +3352,12 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 !std::getenv("GBARECOMP_AUDIO_SHADOW"))
                 bus.audio().set_shadow_enabled(enhanced);
         }
+#if defined(GBARECOMP_PERF_HUD)
+        g_live_perf_hud.previous_overlay = opts.host_overlay;
+        win.set_host_overlay(draw_live_perf_hud);
+#else
         win.set_host_overlay(opts.host_overlay);
+#endif
         win.set_view_margins(ppu.view_extra_left(), ppu.view_extra_right(),
                              ppu.view_extra_top(), ppu.view_extra_bottom());
         touch_window = &win;
