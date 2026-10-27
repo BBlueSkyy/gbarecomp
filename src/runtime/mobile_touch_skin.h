@@ -158,59 +158,81 @@ inline void jump_icon(HostOverlay& o, Circle b) {
                 0.f,c,D);
 }
 
-// Small filled triangle made from thin rectangles; no ImGui-only primitive,
-// no per-frame heap allocations, and works in both SDL and ImGui backends.
-inline void arrow(HostOverlay& o,float x,float y,float r,int dir) {
-    const Color white{249,253,255,245};
-    for(int i=0;i<8;i++) {
-        const float u=(i+.5f)/8.f;
-        const float width=r*(.020f+.132f*u);
-        const float longaxis=r*(-.205f+.44f*u);
-        const float thickness=r*.063f;
-        if(dir==0) // up
-            o.fill_rect(x-width,y+longaxis,2*width,thickness,0,white,D);
-        else if(dir==1) // down
-            o.fill_rect(x-width,y-longaxis,2*width,thickness,0,white,D);
-        else if(dir==2) // left
-            o.fill_rect(x+longaxis,y-width,thickness,2*width,0,white,D);
-        else
-            o.fill_rect(x-longaxis,y-width,thickness,2*width,0,white,D);
+// User-approved discrete D-pad: four independently outlined, rounded
+// translucent-grey keys with five-sided, unfilled directional glyphs.
+// No analog stick, center circle, enclosing ring, blur, or blue neon.
+inline void rounded_key_outline(HostOverlay& o, float x, float y,
+                               float half, float corner, float width, Color c) {
+    const float x0=x-half, x1=x+half, y0=y-half, y1=y+half;
+    line(o,x0+corner,y0,x1-corner,y0,width,c);
+    line(o,x1,y0+corner,x1,y1-corner,width,c);
+    line(o,x1-corner,y1,x0+corner,y1,width,c);
+    line(o,x0,y1-corner,x0,y0+corner,width,c);
+    constexpr float pi=3.14159265358979323846f;
+    const struct Corner { float x,y,start; } corners[]={
+        {x1-corner,y0+corner,-pi*.5f},
+        {x1-corner,y1-corner,0.f},
+        {x0+corner,y1-corner,pi*.5f},
+        {x0+corner,y0+corner,pi}
+    };
+    // Two short segments per corner: visually rounded even on the SDL
+    // renderer fallback where stroke_rect ignores its rounding argument.
+    for(const auto& p:corners) {
+        float px=p.x+corner*std::cos(p.start);
+        float py=p.y+corner*std::sin(p.start);
+        for(int k=1;k<=2;++k) {
+            const float t=p.start+(pi*.5f)*(float(k)/2.f);
+            const float nx=p.x+corner*std::cos(t);
+            const float ny=p.y+corner*std::sin(t);
+            line(o,px,py,nx,ny,width,c);
+            px=nx; py=ny;
+        }
+    }
+}
+inline void outlined_dpad_arrow(HostOverlay& o,float x,float y,
+                                float half,int direction,Color color,float width) {
+    // The source icon is a hollow 'house-shaped' arrow with straight
+    // shoulders and a squared base, not a filled triangle/chevron.
+    constexpr float vx[5]={0.f,-.65f,-.65f,.65f,.65f};
+    constexpr float vy[5]={-.78f,-.08f,.65f,.65f,-.08f};
+    float xx[5],yy[5];
+    for(int i=0;i<5;i++) {
+        float dx=vx[i],dy=vy[i];
+        if(direction==1) {dx=-vx[i];dy=-vy[i];}          // down
+        else if(direction==2) {dx=vy[i];dy=-vx[i];}     // left
+        else if(direction==3) {dx=-vy[i];dy=vx[i];}     // right
+        xx[i]=x+dx*half*.78f;
+        yy[i]=y+dy*half*.78f;
+    }
+    for(int i=0;i<5;i++) {
+        const int j=(i+1)%5;
+        line(o,xx[i],yy[i],xx[j],yy[j],width,color);
     }
 }
 inline void dpad(HostOverlay& o, Circle d, uint16_t held) {
     const float x=d.x,y=d.y,r=d.r;
-    const float a=r*.405f;
-    // Airy translucent blue ring like the approved touch overlay.
-    o.fill_circle(x,y,r*1.28f,{38,111,175,16},D);
-    o.stroke_circle(x,y,r*1.337f,r*.034f,{54,152,248,105},D);
-    o.stroke_circle(x,y,r*1.294f,r*.020f,{184,232,255,115},D);
-    o.stroke_circle(x,y,r*1.225f,r*.021f,{111,197,252,78},D);
-    o.arc(x,y,r*1.325f,r*.029f,.79f,1.13f,
-          {218,248,255,168},D);
-
-    const struct Item {int bit;int direction;float cx,cy;} cells[] = {
-        {6,0,x,y-r*.67f},{7,1,x,y+r*.67f},
-        {5,2,x-r*.67f,y},{4,3,x+r*.67f,y}
+    const float half=r*.34f, offset=r*.72f;
+    const float edge=std::max(1.4f,r*.026f);
+    const float glyph=std::max(1.5f,r*.034f);
+    const struct Item {int bit,dir;float cx,cy;} cells[]={
+        {6,0,x,y-offset}, {7,1,x,y+offset},
+        {5,2,x-offset,y}, {4,3,x+offset,y}
     };
-    for(const auto& q:cells) {
-        const bool down=(held&(1u<<q.bit))!=0;
-        const Color rim=down?Color{129,236,255,245}:Color{211,240,255,224};
-        // More transparent than the previous opaque navy squares: the GBA
-        // scenery remains visible behind all four directional controls.
-        o.fill_rect(q.cx-a,q.cy-a,2*a,2*a,a*.38f,
-                    down?Color{46,158,223,133}:
-                         Color{118,170,205,68},D);
-        o.stroke_rect(q.cx-a,q.cy-a,2*a,2*a,a*.38f,
-                      r*.050f,rim,D);
-        o.stroke_rect(q.cx-a*.915f,q.cy-a*.915f,1.83f*a,1.83f*a,
-                      a*.35f,r*.021f,{144,210,249,122},D);
-        o.fill_rect(q.cx-a*.84f,q.cy-a*.82f,1.68f*a,.34f*a,
-                    a*.22f,{240,252,255,static_cast<uint8_t>(down?98:63)},D);
-        arrow(o,q.cx,q.cy,r,q.direction);
+    for(const auto& cell:cells) {
+        const bool down=(held&(1u<<cell.bit))!=0;
+        // Deliberately neutral grey, partially transparent over the game.
+        // The fill is nearly invisible at idle; only its outlines define
+        // the control. Highlight just the touched direction.
+        o.fill_rect(cell.cx-half,cell.cy-half,2.f*half,2.f*half,
+                    r*.090f,down?Color{104,111,121,95}:
+                                  Color{70,75,82,32},D);
+        rounded_key_outline(o,cell.cx,cell.cy,half,r*.090f,edge,
+                            down?Color{230,233,238,198}:
+                                 Color{174,180,187,118});
+        outlined_dpad_arrow(o,cell.cx,cell.cy,half,cell.dir,
+                            down?Color{249,250,252,228}:
+                                 Color{200,205,212,147},glyph);
     }
-    o.fill_circle(x,y,r*.220f,{50,92,132,138},D);
-    o.stroke_circle(x,y,r*.217f,r*.045f,{209,241,255,165},D);
-    o.fill_circle(x-r*.045f,y-r*.045f,r*.105f,{232,248,255,42},D);
 }
 
 inline void draw(HostOverlay& o,const Layout& l,uint16_t held,
