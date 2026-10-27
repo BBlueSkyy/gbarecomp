@@ -3466,29 +3466,19 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         static const char* const scanline_choices[] = {
             "Off", "Subtle", "Strong"
         };
-        RecompRuntimeUiItem color_item{};
-        color_item.key = GBARECOMP_UI_KEY_COLOR;
-        color_item.section = "Display";
-        color_item.label = "GBA color profile";
-        color_item.description = "Fast present-time color correction; original raw is default.";
-        color_item.type = RECOMP_RUNTIME_UI_CHOICE;
-        color_item.minimum = 0;
-        color_item.maximum = 4;
-        color_item.step = 1;
-        color_item.choices = color_choices;
-        color_item.choice_count = 5;
+        const RecompRuntimeUiItem color_item{
+            GBARECOMP_UI_KEY_COLOR, "Display", "GBA color profile",
+            "Fast present-time color correction; raw is the default.",
+            RECOMP_RUNTIME_UI_CHOICE, 0, 4, 1,
+            color_choices, sizeof(color_choices) / sizeof(*color_choices), nullptr
+        };
         runtime_ui_extras.push_back(color_item);
-        RecompRuntimeUiItem scan_item{};
-        scan_item.key = GBARECOMP_UI_KEY_SCANLINES;
-        scan_item.section = "Display";
-        scan_item.label = "Scanline effect";
-        scan_item.description = "Lightweight GPU overlay. Disable for maximum FPS.";
-        scan_item.type = RECOMP_RUNTIME_UI_CHOICE;
-        scan_item.minimum = 0;
-        scan_item.maximum = 2;
-        scan_item.step = 1;
-        scan_item.choices = scanline_choices;
-        scan_item.choice_count = 3;
+        const RecompRuntimeUiItem scan_item{
+            GBARECOMP_UI_KEY_SCANLINES, "Display", "Scanline effect",
+            "Lightweight GPU overlay. Disable for maximum FPS.",
+            RECOMP_RUNTIME_UI_CHOICE, 0, 2, 1,
+            scanline_choices, sizeof(scanline_choices) / sizeof(*scanline_choices), nullptr
+        };
         runtime_ui_extras.push_back(scan_item);
         RecompRuntimeUiItem pad_scale_item{};
         pad_scale_item.key = GBARECOMP_UI_KEY_PAD_SCALE;
