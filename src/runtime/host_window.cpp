@@ -377,6 +377,7 @@ struct Backend {
     bool touch_controls = false;
     bool pad_visible = false;
     int pad_scale_percent = 100; // controls and hitboxes scale together
+    bool pad_scale_saved = false;
     int scanline_effect = 0;     // off / subtle / strong
     int color_profile = 0;       // raw / backlit / classic / frontlit / unlit
     bool display_preset_saved = false;
@@ -1149,7 +1150,8 @@ void save_touch_config(const Backend* b) {
             const bool header = s != std::string::npos && line[s] == '[';
             if (header)
                 in_section = line.compare(s, 7, "[Touch]") == 0 ||
-                             line.compare(s, 7, "[Audio]") == 0;
+                             line.compare(s, 7, "[Audio]") == 0 ||
+                             line.compare(s, 14, "[VideoEffects]") == 0;
             if (in_section) continue;
             kept.push_back(line);
         }
@@ -1162,6 +1164,8 @@ void save_touch_config(const Backend* b) {
     f << "[Touch]\n";
     if (b->pad_choice_saved)
         f << "pad_visible = " << (b->pad_visible ? 1 : 0) << "\n";
+    if (b->pad_scale_saved)
+        f << "pad_scale = " << b->pad_scale_percent << "\n";
     if (b->toggle_pos_saved) {
         f << "toggle_x = " << b->toggle_fx << "\n";
         f << "toggle_y = " << b->toggle_fy << "\n";
@@ -1169,6 +1173,11 @@ void save_touch_config(const Backend* b) {
     if (b->audio_enhanced_saved) {
         f << "\n[Audio]\n";
         f << "enhanced = " << (b->audio_enhanced ? 1 : 0) << "\n";
+    }
+    if (b->display_preset_saved) {
+        f << "\n[VideoEffects]\n";
+        f << "color_profile = " << b->color_profile << "\n";
+        f << "scanlines = " << b->scanline_effect << "\n";
     }
 }
 
@@ -1973,7 +1982,15 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
         }
     }
 
-    b->color_lut = std::make_unique<runtime::ColorLut>(resolve_color_settings(screen));
+    const auto initial_screen = resolve_color_settings(screen);
+    switch (initial_screen.screen) {
+        case runtime::ScreenKind::Backlit:  b->color_profile = 1; break;
+        case runtime::ScreenKind::Classic:  b->color_profile = 2; break;
+        case runtime::ScreenKind::Frontlit: b->color_profile = 3; break;
+        case runtime::ScreenKind::Unlit:    b->color_profile = 4; break;
+        default: b->color_profile = 0; break;
+    }
+    b->color_lut = std::make_unique<runtime::ColorLut>(initial_screen);
     if (!b->color_lut->is_passthrough())
         b->graded_fb.resize(static_cast<std::size_t>(base_w) * base_h * 3);
 
@@ -2819,6 +2836,12 @@ void HostWindow::set_touch_config_dir(const char* dir) {
         if (SDL_strcasecmp(key, "pad_visible") == 0) {
             b->pad_visible = b->touch_controls && std::atoi(val) != 0;
             b->pad_choice_saved = true;
+        } else if (SDL_strcasecmp(key, "pad_scale") == 0) {
+            const int percent = std::atoi(val);
+            if (percent >= 80 && percent <= 120) {
+                b->pad_scale_percent = percent;
+                b->pad_scale_saved = true;
+            }
         } else if (SDL_strcasecmp(key, "toggle_x") == 0) {
             b->toggle_fx = std::clamp(static_cast<float>(std::atof(val)), 0.0f, 1.0f);
             b->toggle_pos_saved = true;
@@ -2834,6 +2857,30 @@ void HostWindow::set_touch_config_dir(const char* dir) {
             b->audio_enhanced_saved = true;
         }
     });
+    ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "VideoEffects",
+                     [b](const char* key, const char* val) {
+        const int value = std::atoi(val);
+        if (SDL_strcasecmp(key, "color_profile") == 0 &&
+            value >= 0 && value <= 4) {
+            b->color_profile = value;
+            b->display_preset_saved = true;
+        } else if (SDL_strcasecmp(key, "scanlines") == 0 &&
+                   value >= 0 && value <= 2) {
+            b->scanline_effect = value;
+            b->display_preset_saved = true;
+        }
+    });
+    if (b->display_preset_saved) {
+        runtime::ColorSettings settings{};
+        switch (b->color_profile) {
+            case 1: settings.screen = runtime::ScreenKind::Backlit; break;
+            case 2: settings.screen = runtime::ScreenKind::Classic; break;
+            case 3: settings.screen = runtime::ScreenKind::Frontlit; break;
+            case 4: settings.screen = runtime::ScreenKind::Unlit; break;
+            default: break;
+        }
+        b->color_lut = std::make_unique<runtime::ColorLut>(settings);
+    }
 }
 
 bool HostWindow::saved_audio_enhanced(bool& enabled) const {
