@@ -75,6 +75,18 @@ extern "C" unsigned long long g_runtime_vblank_starts;
 namespace {
 
 gbarecomp::RuntimeArmContext* g_resumable_context = nullptr;
+bool g_resumable_irqs = false;
+std::vector<gbarecomp::RuntimeIrqContinuation> g_unbound_interrupts;
+// Host drive loops own no guest residue. Only their live depths are transient;
+// the frame values below survive an unwind and can be resumed by the runner.
+unsigned g_irq_drivers = 0;
+struct IrqHostScope {
+    IrqHostScope() { ++g_irq_drivers; }
+    ~IrqHostScope() { --g_irq_drivers; }
+};
+auto& irq_continuations() {
+    return g_resumable_context ? g_resumable_context->interrupts : g_unbound_interrupts;
+}
 bool g_return_yield = false, g_dispatch_suspended = false;
 std::uint32_t g_suspended_pc = 0;
 
@@ -1018,7 +1030,7 @@ const DispatchEntry* dispatch_resolve(uint32_t target_pc) {
     // so the generated call/return ABI remains balanced.
     if (g_runtime_force_interp_hook &&
         g_runtime_force_interp_hook(pc, thumb ? 1 : 0)) {
-        if (g_resumable_context)
+        if (g_resumable_irqs)
             throw std::logic_error("multiplayer requires native dispatch coverage");
         runtime_bridge_interpret(pc, thumb, 0u, 0u);
         return nullptr;
@@ -1071,7 +1083,7 @@ const DispatchEntry* dispatch_resolve(uint32_t target_pc) {
     // since armv4t must not depend on the runtime lib). When the feature is
     // off this is a single bool check and returns 0.
     if (overlay_try_dispatch(pc, thumb ? 1 : 0)) return nullptr;
-    if (g_resumable_context) {
+    if (g_resumable_irqs) {
         char message[96];
         std::snprintf(message,sizeof(message),"multiplayer native dispatch entry is missing: %08x (%s)",
             pc,thumb ? "Thumb" : "ARM");
@@ -1474,8 +1486,8 @@ extern "C" void runtime_exception_return(uint32_t new_pc) {
     // left (runtime_irq decrements only after its loop exits).
     if (old_mode == 0x12u) {
         g_irq_iret_depth = g_irq_nest_depth;
-        if (g_resumable_context) {
-            auto& stack = g_resumable_context->interrupts;
+        if (g_resumable_irqs) {
+            auto& stack = irq_continuations();
             if (stack.empty()) throw std::logic_error("IRQ return without continuation");
             const auto frame = stack.back();
             stack.pop_back();
@@ -1674,6 +1686,9 @@ extern "C" unsigned long long g_runtime_irq_max_depth = 0;
 extern "C" uint32_t      g_irq_iret_depth = 0;
 
 extern "C" void runtime_irq(uint32_t return_address) {
+    IrqHostScope entry_scope; // entry is atomic, not a snapshot boundary
+    if (irq_continuations().size() >= gbarecomp::kRuntimeIrqLimit)
+        throw std::runtime_error("excessive IRQ continuation depth");
     ++g_runtime_irq_entries;
     ++g_irq_nest_depth;
     if (g_irq_nest_depth > g_runtime_irq_max_depth)
@@ -1703,11 +1718,12 @@ extern "C" void runtime_irq(uint32_t return_address) {
     // a self-heal bridge may have to unwind a RAM/static/RAM call chain in
     // several host dispatches, but the interrupted mainline must still observe
     // the BIOS-preserved volatile registers bit-for-bit.
-    const uint32_t saved_r0  = g_cpu.R[0];
-    const uint32_t saved_r1  = g_cpu.R[1];
-    const uint32_t saved_r2  = g_cpu.R[2];
-    const uint32_t saved_r3  = g_cpu.R[3];
-    const uint32_t saved_r12 = g_cpu.R[12];
+    gbarecomp::RuntimeIrqContinuation frame;
+    frame.preserved = {g_cpu.R[0], g_cpu.R[1], g_cpu.R[2], g_cpu.R[3], g_cpu.R[12]};
+    frame.return_floor = g_call_return_floor;
+    frame.return_depth = g_call_return_depth;
+    frame.iret_depth = g_irq_iret_depth;
+    irq_continuations().push_back(frame);
     // Record the active IRQ source(s) (IE & IF) in the trace addr field and the
     // nesting depth in aux so a ring dump names which interrupt is being
     // vectored and how deep — used to pin the MC-HP-002 IRQ storm. Reading
@@ -1755,26 +1771,27 @@ extern "C" void runtime_irq(uint32_t return_address) {
     // runtime_should_yield() never unwinds us mid-handler. Nested IRQs are
     // handled because the iret depth is matched to this frame's depth; the
     // saved/restored g_irq_iret_depth keeps an enclosing IRQ's loop intact.
-    uint32_t my_depth      = g_irq_nest_depth;
-    uint32_t saved_iret    = g_irq_iret_depth;
     g_irq_iret_depth       = 0u;  // sentinel: this IRQ has not iret'd yet
     // Raise the call-return floor so the handler's guest returns/cancels can
     // unwind back to here but never match/pop the interrupted mainline (or an
     // enclosing IRQ's) frames — see g_call_return_floor. Restored below.
-    uint32_t saved_floor   = g_call_return_floor;
     g_call_return_floor    = g_call_return_depth;
-    if (g_resumable_context) {
-        gbarecomp::RuntimeIrqContinuation frame;
-        frame.preserved = {saved_r0, saved_r1, saved_r2, saved_r3, saved_r12};
-        frame.return_floor = saved_floor;
-        frame.return_depth = g_call_return_depth;
-        frame.iret_depth = saved_iret;
-        g_resumable_context->interrupts.push_back(frame);
+    if (g_resumable_irqs) {
         // The outer dispatcher resumes the recompiled BIOS vector. The
         // continuation, including nesting/floor state, now belongs to the GBA.
         gbarecomp::runtime_suspend_dispatch();
         return;
     }
+    gbarecomp::runtime_resume_irq();
+}
+
+void gbarecomp::runtime_resume_irq() {
+    if (!g_irq_nest_depth || irq_continuations().size() != g_irq_nest_depth)
+        throw std::logic_error("IRQ resume without continuation");
+    if (g_resumable_irqs)
+        throw std::logic_error("synchronous IRQ drive in resumable scheduler");
+    const uint32_t my_depth = g_irq_nest_depth;
+    IrqHostScope drive_scope;
     // Whole-program interpreter mode must cover exception handlers too.
     // Previously only the main run loop honored GBARECOMP_FORCE_INTERP, while
     // IRQs always entered the generated dispatch table. Besides making the
@@ -1791,7 +1808,7 @@ extern "C" void runtime_irq(uint32_t return_address) {
             runtime_dispatch(g_cpu.R[15]);
         }
     };
-    drive_irq_instruction();
+    if (g_irq_iret_depth != my_depth) drive_irq_instruction();
     constexpr uint32_t kMaxIrqDispatches = 4'000'000u;
     uint32_t irq_guard = 0u;
     while (g_irq_iret_depth != my_depth) {
@@ -1805,13 +1822,15 @@ extern "C" void runtime_irq(uint32_t return_address) {
         }
         drive_irq_instruction();
     }
-    g_cpu.R[0]  = saved_r0;
-    g_cpu.R[1]  = saved_r1;
-    g_cpu.R[2]  = saved_r2;
-    g_cpu.R[3]  = saved_r3;
-    g_cpu.R[12] = saved_r12;
-    g_irq_iret_depth = saved_iret;  // restore an enclosing IRQ's expectation
-    g_call_return_floor = saved_floor;
+    const auto frame = irq_continuations().back();
+    irq_continuations().pop_back();
+    for (unsigned i = 0; i < 4; ++i) g_cpu.R[i] = frame.preserved[i];
+    g_cpu.R[12] = frame.preserved[4];
+    // Existing synchronous completion order: restore after the iret's tick.
+    g_call_return_depth = frame.return_depth;
+    clamp_call_return_hostless();
+    g_irq_iret_depth = frame.iret_depth;
+    g_call_return_floor = frame.return_floor;
     --g_irq_nest_depth;
 }
 
@@ -1823,6 +1842,8 @@ extern "C" void runtime_irq(uint32_t return_address) {
 
 extern "C" void runtime_init(void* bus_handle) {
     g_swi_ledger_depth = 0;
+    irq_continuations().clear();
+    g_irq_nest_depth = g_irq_iret_depth = g_call_return_floor = 0;
     gbarecomp::runtime_arm::g_bus_handle = bus_handle;
     g_call_return_depth = 0;
     g_call_return_hostless = 0;
@@ -1830,6 +1851,8 @@ extern "C" void runtime_init(void* bus_handle) {
 
 extern "C" void runtime_shutdown(void) {
     g_swi_ledger_depth = 0;
+    irq_continuations().clear();
+    g_irq_nest_depth = g_irq_iret_depth = g_call_return_floor = 0;
     gbarecomp::runtime_arm::g_bus_handle = nullptr;
     g_call_return_depth = 0;
     g_call_return_hostless = 0;
@@ -1839,6 +1862,7 @@ namespace gbarecomp {
 void runtime_capture_swi_context(std::vector<RuntimeSwiContinuation>& out) {
     out.assign(g_swi_ledger, g_swi_ledger + g_swi_ledger_depth);
 }
+std::uint32_t runtime_swi_depth() { return g_swi_ledger_depth; }
 void runtime_restore_swi_context(const std::vector<RuntimeSwiContinuation>& in) {
     if (in.size() > kSwiLedgerCap)
         throw std::invalid_argument("invalid SWI continuation depth");
@@ -1847,6 +1871,7 @@ void runtime_restore_swi_context(const std::vector<RuntimeSwiContinuation>& in) 
 }
 void runtime_capture_arm_context(RuntimeArmContext& out) {
     runtime_capture_swi_context(out.swi_returns);
+    out.interrupts = irq_continuations();
     out.cpu = g_cpu;
     out.returns.assign(g_call_return_stack, g_call_return_stack + g_call_return_depth);
     out.return_floor = g_call_return_floor;
@@ -1862,15 +1887,27 @@ void runtime_capture_arm_context(RuntimeArmContext& out) {
     out.entry_hook = g_runtime_fn_entry_hook;
     out.bios_hook = g_bios_hle_hook;
 }
-void runtime_restore_arm_context(const RuntimeArmContext& in) {
+void runtime_validate_arm_context(const RuntimeArmContext& in) {
     if (in.swi_returns.size() > kSwiLedgerCap)
         throw std::invalid_argument("invalid SWI continuation depth");
     if (in.returns.size() > kCallReturnStackSize || in.return_floor > in.returns.size() ||
-        in.irq_depth != in.interrupts.size())
+        in.interrupts.size() > kRuntimeIrqLimit || in.irq_depth != in.interrupts.size() ||
+        in.iret_depth > in.irq_depth || in.irq_from_halt > 1)
         throw std::invalid_argument("invalid runtime execution context");
-    for (const auto& frame : in.interrupts)
-        if (frame.return_floor > frame.return_depth || frame.return_depth > in.returns.size())
+    uint32_t floor = 0;
+    for (std::size_t i = 0; i < in.interrupts.size(); ++i) {
+        const auto& frame = in.interrupts[i];
+        if (frame.return_floor != floor || frame.return_floor > frame.return_depth ||
+            frame.return_depth > in.returns.size() || frame.iret_depth > i)
             throw std::invalid_argument("invalid IRQ continuation");
+        floor = frame.return_depth;
+    }
+    if (in.return_floor != floor)
+        throw std::invalid_argument("invalid active IRQ return floor");
+}
+void runtime_restore_arm_context(const RuntimeArmContext& in) {
+    runtime_validate_arm_context(in);
+    irq_continuations() = in.interrupts;
     runtime_restore_swi_context(in.swi_returns);
     g_cpu = in.cpu;
     runtime_call_stack_restore(in.returns.data(), static_cast<std::uint32_t>(in.returns.size()));
@@ -1887,12 +1924,21 @@ void runtime_restore_arm_context(const RuntimeArmContext& in) {
     g_runtime_force_interp_step_active = 0;
     g_runtime_fn_entry_hook = in.entry_hook;
     g_bios_hle_hook = in.bios_hook;
+    runtime_set_return_yield(false);
 }
 void runtime_set_resumable_context(RuntimeArmContext* context) {
     g_resumable_context = context;
+    g_resumable_irqs = context != nullptr;
     runtime_set_return_yield(false);
 }
-bool runtime_has_resumable_context() { return g_resumable_context != nullptr; }
+void runtime_set_owned_context(RuntimeArmContext* context) {
+    g_resumable_context = context;
+    g_resumable_irqs = false;
+    runtime_set_return_yield(false);
+}
+RuntimeArmContext* runtime_owned_context() { return g_resumable_context; }
+bool runtime_has_resumable_context() { return g_resumable_irqs; }
+bool runtime_irq_driver_active() { return g_irq_drivers != 0; }
 void runtime_set_return_yield(bool enabled) {
     g_return_yield = enabled;
     g_dispatch_suspended = false;

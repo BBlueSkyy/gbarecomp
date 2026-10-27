@@ -40,7 +40,7 @@ void return_yield_continuation() {
     guest.cpu.cpsr=0xd3;
     guest.cpu.R[15]=0x08000000;
     guest.returns={0x08000004,0x08000008};
-    runtime_restore_arm_context(guest); runtime_set_resumable_context(&guest);
+    runtime_set_resumable_context(&guest); runtime_restore_arm_context(guest);
     runtime_session_execution(true); runtime_session_begin_instruction();
     runtime_set_return_yield(true);
     CHECK(!runtime_should_yield());
@@ -179,6 +179,12 @@ void wireless_session_restore() {
 void native_exchange() {
     using namespace gbarecomp;
     g_cpu.R[4] = 0xabcdef01;
+    RuntimeArmContext common_owner;
+    runtime_set_owned_context(&common_owner);
+    runtime_capture_arm_context(common_owner);
+    struct UnbindCommonOwner {
+        ~UnbindCommonOwner() { runtime_set_owned_context(nullptr); }
+    } unbind_common_owner;
     auto session = std::make_unique<GbaMultiplayerSession>(config());
     auto& a = session->machine(10);
     auto& b = session->machine(30);
@@ -213,6 +219,7 @@ void native_exchange() {
     CHECK(b.bus.read32(0x02000100) == 0xaaaaaaaa);
     CHECK(g_cpu.R[4] == 0xabcdef01);
     CHECK(!runtime_has_resumable_context());
+    CHECK(runtime_owned_context() == &common_owner);
     CHECK(session->cable().cycle(0) == session->cycle());
     CHECK(session->cable().cycle(1) == session->cycle());
     const auto expected = session->save_state();
@@ -341,19 +348,19 @@ void exception_continuations(bool return_yield) {
     a.cpu.R[0] = 123;
     a.cpu.R[12] = 456;
     a.returns = {0x08001234};
-    runtime_restore_arm_context(a);
     runtime_set_resumable_context(&a);
+    runtime_restore_arm_context(a);
     suspend([] { runtime_irq(0x08000040); });
     CHECK(g_cpu.R[15] == 0x18);
     CHECK(a.interrupts.size() == 1);
     runtime_capture_arm_context(a);
     b.cpu.cpsr = 0x1f;
     b.cpu.R[0] = 999;
-    runtime_restore_arm_context(b);
     runtime_set_resumable_context(&b);
+    runtime_restore_arm_context(b);
     CHECK(g_cpu.R[0] == 999 && runtime_call_stack_depth() == 0);
-    runtime_restore_arm_context(a);
     runtime_set_resumable_context(&a);
+    runtime_restore_arm_context(a);
     CHECK(g_cpu.R[0] == 123 && runtime_call_stack_depth() == 1);
     g_cpu.R[0] = 777;
     const auto outer_spsr = g_cpu.banked_spsr[ARM_BANK_IRQ];
