@@ -1101,6 +1101,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 target_link_gbarecomp_runtime_stack(swi_bridge_amplification)
 
+# Investigation tool only; --check-halt intentionally exposes a known failure.
+# It does not supply a BIOS service implementation and is not a passing CTest.
+add_executable(bios_swi_path_probe EXCLUDE_FROM_ALL tests/runtime/bios_swi_path_probe.cpp)
+target_link_gbarecomp_runtime_stack(bios_swi_path_probe)
+
 
 add_gbarecomp_runtime_stack_test(high_resolution_tests tests/ppu/high_resolution_test.cpp)
 add_gbarecomp_runtime_stack_test(vertical_obj_tests tests/ppu/vertical_obj_test.cpp)
