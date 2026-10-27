@@ -741,27 +741,31 @@ PadLayout compute_pad_layout(const Backend* b) {
         p.start = {mid + 3.0f * mm, pills_y, pill_w, pill_h};
     }
     if (b->mobile_action_hud && dw >= dh) {
-        // Four independent physical buttons, matching the game's B/A/L/R.
-        // Side-rail preference avoids covering the gameplay when possible.
-        // Top: R (Ki). Middle: B (punch). Bottom: L (staff).
-        // A (jump) sits to the left of L, clear of the three stacked buttons.
+        // Approved reference #1: B/punch at upper right, R/Ki below,
+        // A/jump at lower right and L/Power Pole to the left of jump.
+        // Preserve the same physical four-button hit regions/multitouch
+        // mapping; only their locations change, not their GBA KEYINPUT bits.
         const float rail = std::max(0.0f,
             right - static_cast<float>(g.x + g.width));
         const float rail_min = 2.0f * button_r + 2.0f * margin;
         const float x = rail >= rail_min
             ? right - rail * 0.5f : right - margin - button_r;
         const float vertical = bottom - top;
-        const float min_gap = 2.3f * button_r;
-        p.ki = {x, top + std::max(margin + button_r,
-                                 vertical * 0.19f), button_r};
-        p.b = {x, top + std::max(margin + button_r + min_gap,
-                                vertical * 0.43f), button_r};
-        p.pole = {x, std::min(bottom - margin - button_r,
-                             std::max(p.b.y + min_gap,
-                                      top + vertical * 0.71f)), button_r};
-        p.a = {x - 2.55f * button_r,
-               std::min(bottom - margin - button_r,
-                        p.pole.y + button_r * 0.12f), button_r * 0.90f};
+        const float last_y = std::min(bottom - margin - button_r,
+                                      top + vertical * 0.79f);
+        const float top_y = top + margin + button_r;
+        // Keep the vertical spacing when screen height allows it, but
+        // contain the whole stack within its safe display rectangle.
+        const float gap = std::min(2.30f * button_r,
+                                   std::max(0.0f, (last_y - top_y) * .5f));
+        const float fist_y = last_y - 2.0f * gap;
+        p.b = {x, fist_y, button_r};                  // Punch, B
+        p.ki = {x, fist_y + gap, button_r};           // Kamehameha, R
+        p.a = {x, last_y, button_r};                  // Jump, A
+        p.pole = {x - 2.55f * button_r,
+                  std::min(bottom - margin - button_r,
+                           last_y + .12f * button_r),
+                  button_r * .90f};                    // Power Pole, L
         // Shoulder keys are the two round special buttons, never duplicates.
         p.l = {};
         p.r = {};
