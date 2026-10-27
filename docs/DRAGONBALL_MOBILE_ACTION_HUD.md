@@ -163,3 +163,31 @@ Moto G100 appearance/perf tests remain pending. On the Android build,
 frame-to-frame icon rendering adds around 200 short horizontal spans
 per frame (no external asset upload, no new shader); FPS overhead must
 be verified rather than assumed negligible.
+
+## Four-key translucent grey D-pad reference (October 2026)
+
+The owner clarified that the directional control is **not a circular
+joystick**. The final reference has four separate rounded-square buttons
+in a cardinal cross (up, down, left, right); each contains an *outlined*
+five-sided directional arrow. The gap in the middle stays empty. No outer
+circle, central knob, blue ring or filled arrows.
+
+The updated `mobile_touch_skin.h` renders four individually bounded
+buttons: neutral grey with 32/255 translucent fill and 118/255 border at
+idle, a slightly brighter pressed state, grey outlined glyphs. Rounded
+corners are constructed using short geometric segments even on the SDL
+fallback without rounded strokes. Existing input geometry is deliberately
+unchanged: bit 6 up, 7 down, 5 left and 4 right, diagonal gestures and
+multitouch still use the same hit tests.
+
+The four action circles have also received lower alpha on their dark glass
+layers; the selected fist/jump contours and charged-only blue special
+halo remain. Host-supplied reference image was only used for the shape,
+not to replace the game framebuffer. The ROM-free visual smoke test now
+checks four idle keys, 20 outlined arrow sides, 48 rounded key-outline
+segments, a single highlighted key on Up, and no analog center circle.
+
+This branch predates the engine HALT merge. The **HALT/performance fix must
+be carried forward from engine main when preparing an Android integration
+build**; this Draft is not yet evidence of performance parity with the
+post-HALT main branch. No on-device FPS or screenshot verification yet.
