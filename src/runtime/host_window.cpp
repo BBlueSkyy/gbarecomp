@@ -376,6 +376,11 @@ struct Backend {
     // GBARECOMP_TOUCH_CONTROLS) and its player-controlled visibility.
     bool touch_controls = false;
     bool pad_visible = false;
+    bool mobile_action_hud = false;
+    HostWindow::SpecialMeterProbe special_meter_probe = nullptr;
+    bool special_ready = false;
+    unsigned special_ready_streak = 0;
+    unsigned special_not_ready_streak = 0;
     int pad_scale_percent = 100; // controls and hitboxes scale together
     bool pad_scale_saved = false;
     int scanline_effect = 0;     // off / subtle / strong
@@ -645,6 +650,7 @@ struct PadLayout {
     PadCircle dpad;       // r = arm length (centre to tip)
     float dpad_thick = 0;
     PadCircle a, b;
+    PadCircle pole, ki; // only used in title-specific mobile layout
     PadRect l, r, select, start;
     PadRect toggle;
 };
@@ -732,7 +738,34 @@ PadLayout compute_pad_layout(const Backend* b) {
         const float mid = (left + right) * 0.5f;
         p.select = {mid - pill_w - 3.0f * mm, pills_y, pill_w, pill_h};
         p.start = {mid + 3.0f * mm, pills_y, pill_w, pill_h};
-    }    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
+    }
+    if (b->mobile_action_hud && dw >= dh) {
+        // Four independent physical buttons, matching the game's B/A/L/R.
+        // Side-rail preference avoids covering the gameplay when possible.
+        // Top: R (Ki). Middle: B (punch). Bottom: L (staff).
+        // A (jump) sits to the left of L, clear of the three stacked buttons.
+        const float rail = std::max(0.0f,
+            right - static_cast<float>(g.x + g.width));
+        const float rail_min = 2.0f * button_r + 2.0f * margin;
+        const float x = rail >= rail_min
+            ? right - rail * 0.5f : right - margin - button_r;
+        const float vertical = bottom - top;
+        const float min_gap = 2.3f * button_r;
+        p.ki = {x, top + std::max(margin + button_r,
+                                 vertical * 0.19f), button_r};
+        p.b = {x, top + std::max(margin + button_r + min_gap,
+                                vertical * 0.43f), button_r};
+        p.pole = {x, std::min(bottom - margin - button_r,
+                             std::max(p.b.y + min_gap,
+                                      top + vertical * 0.71f)), button_r};
+        p.a = {x - 2.55f * button_r,
+               std::min(bottom - margin - button_r,
+                        p.pole.y + button_r * 0.12f), button_r * 0.90f};
+        // Shoulder keys are the two round special buttons, never duplicates.
+        p.l = {};
+        p.r = {};
+    }
+    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
     float cx = right - edge - tw * 0.5f;
     float cy = bottom - edge - th * 0.5f;
     if (b->toggle_pos_saved) {
@@ -771,8 +804,13 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     const float pad = 2.0f * mm;
     if (p.select.contains(x, y, pad)) buttons |= 1u << 2;
     if (p.start.contains(x, y, pad)) buttons |= 1u << 3;
-    if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
-    if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    if (p.ki.r > 0.0f) {
+        if (in_circle(p.ki, 1.08f)) buttons |= 1u << 8;
+        if (in_circle(p.pole, 1.08f)) buttons |= 1u << 9;
+    } else {
+        if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
+        if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    }
     return buttons;
 }
 
