@@ -255,6 +255,11 @@ struct PcBucket {
 std::array<PcBucket, kPcSamplesSize> g_perf_pc_samples{};
 std::uint64_t g_perf_pc_dropped = 0;
 std::uint64_t g_perf_halt_samples = 0;
+// Jitter 96..159 interpreted instructions between samples (mean ~127.5).
+// A fixed 128-step phase can repeatedly sample the same PC in a tight guest
+// loop whose instruction count aliases that interval.
+std::uint64_t g_perf_next_pc_sample = 128;
+std::uint32_t g_perf_sample_rng = 0x7F4A7C15u;
 void note_internal_pc(std::uint32_t pc, bool thumb, bool halted) {
     const std::uint64_t key = (((std::uint64_t(pc) << 1) |
                                  std::uint64_t(thumb)) + 1u);
@@ -1074,8 +1079,14 @@ extern "C" int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
         ++bridged_insns;
 #if defined(GBARECOMP_PERF_HUD)
         ++g_perf_bridge_insns_live;  // live even if this subtree never exits
-        if ((g_perf_bridge_insns_live & 127u) == 0)
+        if (g_perf_bridge_insns_live >= g_perf_next_pc_sample) {
             note_internal_pc(pc, was_thumb, bus->io().halted());
+            // Xorshift only at sample boundaries; no PRNG inside each step.
+            g_perf_sample_rng ^= g_perf_sample_rng << 13;
+            g_perf_sample_rng ^= g_perf_sample_rng >> 17;
+            g_perf_sample_rng ^= g_perf_sample_rng << 5;
+            g_perf_next_pc_sample += 96u + (g_perf_sample_rng & 63u);
+        }
 #endif
 
         if (r == armv4t::Interpreter::Result::NotImplemented ||
