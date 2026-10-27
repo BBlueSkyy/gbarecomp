@@ -14,6 +14,11 @@ namespace gba { class GbaPpu; }
 extern "C" unsigned long long g_runtime_vblank_starts;
 
 namespace gbarecomp {
+// Advance one event-bounded idle chunk using the live lazy timing horizon.
+// Returns requested idle cycles (wake/IRQ costs remain in the master clock).
+// An already-pending HALT source wakes without adding a polling cycle.
+// May throw RuntimeDispatchYield if a synchronously delivered IRQ halts.
+std::uint32_t runtime_pump_idle(std::uint32_t max_cycles);
 
 // Install the active bus pointer. Subsequent bus_read_u*/bus_write_u*
 // calls from generated code (declared in src/armv4t/runtime_arm.h)

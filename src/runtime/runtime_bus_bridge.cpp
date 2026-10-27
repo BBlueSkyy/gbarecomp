@@ -731,6 +731,62 @@ extern "C" void runtime_resync_horizon(void) {
     recompute_event_budget(bus, ppu);
 }
 
+namespace {
+void service_interrupts(gba::GbaBus* bus, gba::GbaPpu* ppu) {
+    // HALT wake is independent of IME and CPSR.I. Those masks gate exception
+    // delivery only; a masked enabled source must still let the CPU resume.
+    const bool wake = bus->io().halted() && (bus->io().ie() & bus->io().if_reg());
+    if (wake) {
+        // Retain the common backend's existing seven-cycle wake window. Wake
+        // and exception delivery use different masks; devices advance during
+        // the same window even when IME or CPSR.I prevents exception delivery.
+        // No guest instruction executes during it. The multiplayer scheduler
+        // has a separate four-cycle policy, deliberately not imported here.
+        bus->io().clear_halt();
+        // Materialize any cycles accumulated before the wake first (preserve
+        // device ordering), then the wake-latency window, then re-arm the
+        // horizon — all devices are now current as of this cycle.
+        if (g_pending_cycles) {
+            tick_devices(bus, ppu, static_cast<uint32_t>(g_pending_cycles));
+            g_pending_cycles = 0;
+        }
+        cyc_probe("irq_wake", gba::kIrqWakeDelayCycles);
+        g_runtime_cycles += gba::kIrqWakeDelayCycles;
+        tick_devices(bus, ppu, gba::kIrqWakeDelayCycles);
+        // Wake-time HBlank/FIFO DMA must steal its cycles before either a
+        // handler or the awakened CPU executes, just as in runtime_tick().
+        drain_dma_steal(bus, ppu);
+        recompute_event_budget(bus, ppu);
+    }
+    if (bus->io().irq_pending() && (g_cpu.cpsr & CPSR_I_BIT) == 0) {
+        g_runtime_irq_from_halt = wake ? 1u : 0u;
+        runtime_irq(g_cpu.R[15]);
+    }
+}
+} // namespace
+
+namespace gbarecomp {
+uint32_t runtime_pump_idle(uint32_t max_cycles) {
+    auto* bus = g_active_bus;
+    auto* ppu = g_active_ppu;
+    if (!bus || !ppu || !max_cycles) return 0;
+    // A source already pending at this boundary needs no fictitious CPU poll
+    // cycle or trip to the next device event. The wake window is charged by
+    // the same service routine as runtime_tick().
+    if (bus->io().halted() && (bus->io().ie() & bus->io().if_reg())) {
+        service_interrupts(bus, ppu);
+        return 0;
+    }
+    // The lazy horizon is relative to CPU time; querying raw device horizons
+    // can include already charged but unmaterialized guest cycles. A zero
+    // horizon (e.g. v4 migration) re-arms through the usual one-cycle tick.
+    const auto horizon = g_event_budget > 0 ? static_cast<uint32_t>(g_event_budget) : 1u;
+    const uint32_t chunk = std::min(max_cycles, horizon);
+    runtime_tick(chunk);
+    return chunk;
+}
+} // namespace gbarecomp
+
 extern "C" void runtime_tick(uint32_t cycles) {
     if (g_session_execution) { g_runtime_cycles += cycles; return; }
     // P6 shadow-tick: a healed shard's validation re-run only accumulates its
@@ -777,40 +833,7 @@ extern "C" void runtime_tick(uint32_t cycles) {
     // so a DMA-end IRQ or a timer that overflowed during the steal is seen now.
     drain_dma_steal(bus, ppu);
 
-    if (bus->io().irq_pending() && (g_cpu.cpsr & CPSR_I_BIT) == 0) {
-        g_runtime_irq_from_halt = bus->io().halted() ? 1u : 0u;
-        if (bus->io().halted()) {
-            // Wake-from-HALT IRQ latency. The ARM7TDMI does not vector the
-            // instant the IRQ pends out of HALT, and the interpreter oracle
-            // (bios_smoke) models this delay. Taking it immediately here
-            // vectored ~kIrqWakeDelayCycles early every VBlank (the game
-            // VBlankIntrWaits each frame), shifting m4a sequencer phase enough
-            // to double-tick a channel once a fade started → MC-HP-002 hang.
-            // Pump the devices for the latency window WITHOUT re-taking the
-            // IRQ (tick_devices, not runtime_tick), then vector — matching the
-            // oracle exactly. Newly-pended bits stay in IF for the next check.
-            // These wake-delay cycles really elapse on hardware, so they must
-            // also advance the cumulative cycle clock (the oracle's pump_step
-            // counts them in cycles_elapsed). Omitting this left g_runtime_cycles
-            // 7 cyc/IRQ short of the oracle, growing the fingerprint cycle skew
-            // by -7/IRQ (the MC-HP-002 cycle drift) — cosmetic for execution
-            // (the PPU/audio above are ticked regardless) but it broke cycle-
-            // aligned diffing.
-            bus->io().clear_halt();
-            // Materialize any cycles accumulated before the wake first (preserve
-            // device ordering), then the wake-latency window, then re-arm the
-            // horizon — all devices are now current as of this cycle.
-            if (g_pending_cycles) {
-                tick_devices(bus, ppu, static_cast<uint32_t>(g_pending_cycles));
-                g_pending_cycles = 0;
-            }
-            cyc_probe("irq_wake", gba::kIrqWakeDelayCycles);
-            g_runtime_cycles += gba::kIrqWakeDelayCycles;
-            tick_devices(bus, ppu, gba::kIrqWakeDelayCycles);
-            recompute_event_budget(bus, ppu);
-        }
-        runtime_irq(g_cpu.R[15]);
-    }
+    service_interrupts(bus, ppu);
 
 #ifdef GBA_COSIM
     // First-divergence co-simulation checkpoint. runtime_tick is the shared
@@ -1096,6 +1119,12 @@ extern "C" bool runtime_should_yield(void) {
     if (bus && g_cpu.R[15] < 0x00004000u)
         bus->latch_bios_prefetch(g_cpu.R[15], (g_cpu.cpsr & CPSR_T_BIT) != 0);
     if (g_session_execution) return false;
+
+    // Common-runner IRQ/SWI residue is value-owned. Unwind all host frames at
+    // HALT, including synchronous IRQ drivers, instead of returning as though
+    // a native call or handler had completed. Multiplayer has its own policy.
+    if (bus && bus->io().halted() && gbarecomp::runtime_owned_context())
+        return gbarecomp::runtime_suspend_dispatch();
 
     // Generated direct calls can enter mutable/self-modifying code without
     // crossing runtime_dispatch. Unwind stale AOT at its per-instruction

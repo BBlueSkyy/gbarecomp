@@ -57,7 +57,7 @@ template<class Archive> void manifest(Archive& a, const GbaSessionConfig& config
 // Restore the legacy caller's execution window even when a guest fails.
 class ExecutionScope {
 public:
-    ExecutionScope() : bus_(active_bus()), ppu_(active_ppu()) {
+    ExecutionScope() : bus_(active_bus()), owner_(runtime_owned_context()), ppu_(active_ppu()) {
         if (runtime_has_resumable_context())
             throw std::logic_error("nested multiplayer session execution");
         runtime_capture_arm_context(arm_);
@@ -67,7 +67,7 @@ public:
         runtime_session_execution(true);
     }
     ~ExecutionScope() {
-        runtime_set_resumable_context(nullptr);
+        runtime_set_owned_context(owner_);
         runtime_session_execution(false);
         runtime_restore_arm_context(arm_);
         runtime_restore_timing_context(timing_);
@@ -77,6 +77,7 @@ private:
     RuntimeArmContext arm_;
     RuntimeTimingContext timing_;
     gba::GbaBus* bus_;
+    RuntimeArmContext* owner_;
     gba::GbaPpu* ppu_;
 };
 }
@@ -116,9 +117,9 @@ const GbaInstance& GbaMultiplayerSession::machine(GbaMachineId id) const {
     throw std::out_of_range("unknown GBA machine ID");
 }
 void GbaMultiplayerSession::bind(GbaInstance& instance) {
+    runtime_set_resumable_context(&instance.execution);
     runtime_restore_arm_context(instance.execution);
     runtime_restore_timing_context(instance.timing);
-    runtime_set_resumable_context(&instance.execution);
     set_active_bus(&instance.bus); set_active_ppu(&instance.ppu);
 }
 void GbaMultiplayerSession::capture(GbaInstance& instance) {

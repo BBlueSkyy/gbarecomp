@@ -34,11 +34,10 @@ namespace gbarecomp::debug {
 
 class ModStateRegistry;
 
-// New snapshots use v2.  The loader also recognizes the original v1
-// seven-section container only when no trusted native providers are registered;
-// it has no MODS identity to migrate or validate.  Other old layouts remain
-// rejected rather than guessed.
-constexpr uint32_t kSnapshotVersion = 4;
+// v5 adds explicit IRQ continuations and lazy-clock state. v4 clean-boundary
+// snapshots migrate with no active IRQ and no recoverable pending cycle debt.
+// Earlier, already-unsupported layouts remain rejected rather than guessed.
+constexpr uint32_t kSnapshotVersion = 5;
 
 // ── SnapshotWriter ─────────────────────────────────────────────────
 // Append-only little-endian byte sink. Header-only.

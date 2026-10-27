@@ -694,6 +694,9 @@ bool run_call_return_eviction_cases() {
     gbarecomp::RuntimeArmContext ctx;
     ctx.returns = leaked;
     ctx.return_floor = kCap - 2u;
+    // PR9 validates that a nonzero floor belongs to a real IRQ continuation.
+    ctx.irq_depth = 1;
+    ctx.interrupts.push_back({{}, 0, kCap - 2u, 0});
     runtime_init(nullptr);
     gbarecomp::runtime_restore_arm_context(ctx);
     const unsigned long long floor_before = g_runtime_call_return_evictions;

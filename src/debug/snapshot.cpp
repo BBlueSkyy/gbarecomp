@@ -21,6 +21,8 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
+#include <limits>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -28,6 +30,7 @@
 #include "gba_ppu.h"
 #include "runtime_arm.h"
 #include "runtime_context.h"
+#include "runtime_bus_bridge.h"
 
 namespace gbarecomp::debug {
 
@@ -51,6 +54,7 @@ constexpr uint32_t TAG_SAVE  = fourcc('S', 'A', 'V', '0');
 constexpr uint32_t TAG_PPU   = fourcc('P', 'P', 'U', '0');
 constexpr uint32_t TAG_META  = fourcc('M', 'E', 'T', 'A');
 constexpr uint32_t TAG_MODS  = fourcc('M', 'O', 'D', 'S');
+constexpr uint32_t TAG_EXEC  = fourcc('E', 'X', 'E', 'C');
 
 constexpr std::size_t kRomSha1Len = 40;
 
@@ -75,19 +79,18 @@ void add_section(SnapshotWriter& out, uint32_t tag, Fill&& fill) {
     out.bytes(payload.buffer().data(), payload.size());
 }
 
-void serialize_cpu(SnapshotWriter& w) {
-    w.bytes(&g_cpu, sizeof(g_cpu));
-    uint32_t depth = runtime_call_stack_depth();
-    const uint32_t* data = runtime_call_stack_data();
+void serialize_cpu(SnapshotWriter& w, const RuntimeArmContext& state) {
+    w.bytes(&state.cpu, sizeof(state.cpu));
+    uint32_t depth = static_cast<uint32_t>(state.returns.size());
+    const uint32_t* data = state.returns.data();
     w.u32(depth);
     for (uint32_t i = 0; i < depth; ++i) w.u32(data[i]);
-    std::vector<RuntimeSwiContinuation> swi;
-    runtime_capture_swi_context(swi);
+    const auto& swi = state.swi_returns;
     w.u32(static_cast<uint32_t>(swi.size()));
     for (const auto& slot : swi) { w.u32(slot.continuation); w.u32(slot.return_pc); }
 }
 
-bool deserialize_cpu(SnapshotReader& r, bool commit) {
+bool deserialize_cpu(SnapshotReader& r, RuntimeArmContext& state) {
     ArmCpuState cpu{};
     r.bytes(&cpu, sizeof(cpu));
     uint32_t depth = r.u32();
@@ -99,11 +102,46 @@ bool deserialize_cpu(SnapshotReader& r, bool commit) {
     std::vector<RuntimeSwiContinuation> swi(count);
     for (auto& slot : swi) { slot.continuation = r.u32(); slot.return_pc = r.u32(); }
     if (!r.ok() || r.remaining() != 0) return false;
-    if (commit) {
-        g_cpu = cpu;
-        runtime_call_stack_restore(entries.data(), depth);
-        runtime_restore_swi_context(swi);
+    state.cpu = cpu;
+    state.returns = std::move(entries);
+    state.swi_returns = std::move(swi);
+    return true;
+}
+
+// Only value state crosses the file boundary. RuntimeArmContext's callbacks,
+// owner pointer and dispatch policy remain wiring of the current executable.
+void serialize_execution(SnapshotWriter& w, const RuntimeArmContext& state,
+                         const RuntimeTimingContext& t) {
+    w.u32(1); // EXEC schema
+    w.u32(state.return_floor); w.u32(state.irq_depth); w.u32(state.iret_depth);
+    w.u32(state.resume_pc); w.u32(state.irq_from_halt); w.u64(state.irq_entries);
+    w.u32(static_cast<uint32_t>(state.interrupts.size()));
+    for (const auto& f : state.interrupts) {
+        for (auto reg : f.preserved) w.u32(reg);
+        w.u32(f.return_floor); w.u32(f.return_depth); w.u32(f.iret_depth);
     }
+    w.u64(t.cycles); w.u64(t.vblank_starts); w.u64(t.yielded_vblank);
+    w.u64(t.pending_cycles); w.u64(static_cast<uint64_t>(t.event_budget));
+}
+bool deserialize_execution(SnapshotReader& r, RuntimeArmContext& state,
+                           RuntimeTimingContext& t) {
+    if (r.u32() != 1) return false;
+    state.return_floor = r.u32(); state.irq_depth = r.u32(); state.iret_depth = r.u32();
+    state.resume_pc = r.u32(); state.irq_from_halt = r.u32(); state.irq_entries = r.u64();
+    const auto count = r.u32();
+    if (!r.ok() || count > kRuntimeIrqLimit || count > r.remaining() / 32u) return false;
+    state.interrupts.resize(count);
+    for (auto& f : state.interrupts) {
+        for (auto& reg : f.preserved) reg = r.u32();
+        f.return_floor = r.u32(); f.return_depth = r.u32(); f.iret_depth = r.u32();
+    }
+    t.cycles = r.u64(); t.vblank_starts = r.u64(); t.yielded_vblank = r.u64();
+    t.pending_cycles = r.u64();
+    const auto budget = r.u64();
+    if (!r.ok() || r.remaining() || budget > std::numeric_limits<uint32_t>::max() ||
+        t.pending_cycles > std::numeric_limits<uint32_t>::max() ||
+        t.yielded_vblank > t.vblank_starts) return false;
+    t.event_budget = static_cast<int64_t>(budget);
     return true;
 }
 
@@ -126,6 +164,10 @@ void deserialize_meta(SnapshotReader& r, const SnapshotContext& ctx) {
 
 bool save_state_bytes(std::vector<uint8_t>* out, const SnapshotContext& ctx,
                       std::string* err) {
+    if (runtime_irq_driver_active()) {
+        if (err) *err = "snapshot: active IRQ dispatch is not a save boundary";
+        return false;
+    }
     if (!out) {
         if (err) *err = "snapshot: output buffer not provided";
         return false;
@@ -138,27 +180,35 @@ bool save_state_bytes(std::vector<uint8_t>* out, const SnapshotContext& ctx,
     char sha1[kRomSha1Len];
     fill_rom_sha1(sha1, ctx.rom_sha1);
 
-    // Version 2 deliberately remains the container version.  MODS is a tagged
-    // optional section: v2 files written before mod-state existed still load
-    // for an empty catalog, while any active catalog requires its exact MODS
-    // identity on load.
+    // MODS retains its existing optional tagged contract. An active provider
+    // catalog still requires an exact MODS identity before any state is loaded.
     SnapshotWriter mods;
     const bool has_mod_state = ctx.mod_state && ctx.mod_state->size() != 0;
     if (has_mod_state && !ctx.mod_state->serialize(mods, err)) return false;
 
+    RuntimeArmContext execution;
+    runtime_capture_arm_context(execution);
+    try { runtime_validate_arm_context(execution); }
+    catch (const std::invalid_argument& e) {
+        if (err) *err = std::string("snapshot: ") + e.what();
+        return false;
+    }
+    RuntimeTimingContext timing;
+    runtime_capture_timing_context(timing);
     SnapshotWriter w;
     w.bytes(kMagic, 4);
     w.u32(kSnapshotVersion);
     w.bytes(sha1, kRomSha1Len);
-    w.u32(has_mod_state ? 8 : 7);  // section_count
+    w.u32(has_mod_state ? 9 : 8);  // section_count
 
-    add_section(w, TAG_CPU,   [&](SnapshotWriter& s) { serialize_cpu(s); });
+    add_section(w, TAG_CPU,   [&](SnapshotWriter& s) { serialize_cpu(s, execution); });
     add_section(w, TAG_BUS,   [&](SnapshotWriter& s) { ctx.bus->serialize(s); });
     add_section(w, TAG_IO,    [&](SnapshotWriter& s) { ctx.bus->io().serialize(s); });
     add_section(w, TAG_AUDIO, [&](SnapshotWriter& s) { ctx.bus->audio().serialize(s); });
     add_section(w, TAG_SAVE,  [&](SnapshotWriter& s) { ctx.bus->save().serialize(s); });
     add_section(w, TAG_PPU,   [&](SnapshotWriter& s) { ctx.ppu->serialize(s); });
     add_section(w, TAG_META,  [&](SnapshotWriter& s) { serialize_meta(s, ctx); });
+    add_section(w, TAG_EXEC,  [&](SnapshotWriter& s) { serialize_execution(s, execution, timing); });
     if (has_mod_state) {
         w.u32(TAG_MODS);
         w.u32(static_cast<uint32_t>(mods.size()));
@@ -203,6 +253,10 @@ bool save_state(const char* path, const SnapshotContext& ctx, std::string* err) 
 
 bool load_state_bytes(const uint8_t* data, std::size_t size,
                       const SnapshotContext& ctx, std::string* err) {
+    if (runtime_irq_driver_active()) {
+        if (err) *err = "snapshot: active IRQ dispatch is not a load boundary";
+        return false;
+    }
     if (!ctx.bus || !ctx.ppu) {
         if (err) *err = "snapshot: bus/ppu not wired";
         return false;
@@ -221,7 +275,7 @@ bool load_state_bytes(const uint8_t* data, std::size_t size,
         return false;
     }
     uint32_t version = head.u32();
-    if (version != kSnapshotVersion) {
+    if (version != kSnapshotVersion && version != 4) {
         if (err) {
             *err = "snapshot: version mismatch (file v" +
                    std::to_string(version) + ", runtime v" +
@@ -344,14 +398,52 @@ bool load_state_bytes(const uint8_t* data, std::size_t size,
         return SnapshotReader(base, len);
     };
 
+    RuntimeArmContext execution;
+    // Retain trusted callbacks of the current executable, not the old process.
+    runtime_capture_arm_context(execution);
+    execution.interrupts.clear();
+    execution.return_floor = execution.irq_depth = execution.iret_depth = 0;
+    execution.resume_pc = execution.irq_from_halt = 0;
+    execution.irq_entries = 0;
+    RuntimeTimingContext timing{};
     {
         SnapshotReader r = reader_for(TAG_CPU);
-        if (!deserialize_cpu(r, false)) {
+        if (!deserialize_cpu(r, execution)) {
             if (err) *err = "snapshot: invalid CPU continuation";
             return false;
         }
     }
-    { SnapshotReader r = reader_for(TAG_CPU);   deserialize_cpu(r, true); }
+    if (version == kSnapshotVersion) {
+        if (sections.find(TAG_EXEC) == sections.end()) {
+            if (err) *err = "snapshot: missing EXEC section";
+            return false;
+        }
+        auto r = reader_for(TAG_EXEC);
+        if (!deserialize_execution(r, execution, timing)) {
+            if (err) *err = "snapshot: invalid EXEC section";
+            return false;
+        }
+    } else {
+        if (sections.find(TAG_EXEC) != sections.end()) {
+            if (err) *err = "snapshot: EXEC is not defined for v4";
+            return false;
+        }
+        // v4 has no IRQ metadata or lazy timing debt. Its META clock may be
+        // advisory, but retain it where present and re-arm the horizon (zero)
+        // on the next tick, without advancing loaded devices during migration.
+        auto it = sections.find(TAG_META);
+        if (it != sections.end()) {
+            auto r = reader_for(TAG_META);
+            r.u64(); timing.cycles = r.u64();
+            if (!r.ok()) { if (err) *err = "snapshot: truncated v4 META"; return false; }
+        }
+    }
+    try { runtime_validate_arm_context(execution); }
+    catch (const std::invalid_argument& e) {
+        if (err) *err = std::string("snapshot: ") + e.what();
+        return false;
+    }
+    runtime_restore_arm_context(execution);
     { SnapshotReader r = reader_for(TAG_BUS);   ctx.bus->deserialize(r); }
     { SnapshotReader r = reader_for(TAG_IO);    ctx.bus->io().deserialize(r); }
     // WAITCNT arrived with the IO page; re-derive the bus wait-state table.
@@ -370,6 +462,10 @@ bool load_state_bytes(const uint8_t* data, std::size_t size,
         // live, so continuing after a provider violation would be unsafe.
         if (!ctx.mod_state->restore(mods_reader, err)) std::abort();
     }
+
+    // EXEC is authoritative even when META's advisory counter aliases the
+    // master clock. Invalidate speculative idle proofs, do not tick devices.
+    runtime_restore_timing_context(timing);
 
     return true;
 }

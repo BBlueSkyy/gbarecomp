@@ -296,7 +296,9 @@ int runtime_has_static_entry(uint32_t pc, int thumb);
 // max_instrs=0 → the default 200M abort-on-runaway; non-zero bounds the walk and
 // returns 0 (instead of aborting) if the stop isn't reached in that budget — the
 // gate uses this to fall back safely when its forced stop turns out wrong.
-// Returns 1 if it stopped cleanly at the stop address, 0 if it hit the budget.
+// Returns 1 at a completed subtree boundary, 0 for an unfinished bounded pass
+// (including HALT). An unbounded HALT suspends through RuntimeDispatchYield /
+// the runner's dispatch-suspension protocol, without consuming caller frames.
 int runtime_bridge_interpret(uint32_t entry_pc, bool entry_thumb,
                              uint32_t forced_stop_pc, uint64_t max_instrs);
 

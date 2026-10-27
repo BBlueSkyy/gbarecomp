@@ -79,13 +79,7 @@ bool waits_apply_memctl(RuntimeWaitTable& t, uint32_t memctl) {
 
 uint32_t waits_access_cycles(const RuntimeWaitTable& t, uint32_t addr,
                              uint8_t width, bool sequential) {
-    const uint32_t region = addr >> 24;
-    if (region > 0xFu) return 1u;
-    if (region == kRegionSram || region == kRegionSramMirror)
-        return 1u + t.n16[region];
-    if (width == 4u)
-        return 1u + (sequential ? t.s32[region] : t.n32[region]);
-    return 1u + (sequential ? t.s16[region] : t.n16[region]);
+    return rwt_access_cycles(&t, addr, width, sequential ? 1u : 0u);
 }
 
 uint32_t waits_code(const RuntimeWaitTable& t, uint32_t pc, bool thumb,

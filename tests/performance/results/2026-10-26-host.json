@@ -1,0 +1,145 @@
+{
+  "paths": {
+    "baseline": "baseline/runtime_hotpath_bench",
+    "candidate": "candidate/runtime_hotpath_bench"
+  },
+  "samples_per_path": 56,
+  "state": [
+    "cycles=86800000 frames=309 pc=8000100 reg=0",
+    "state_fnv1a=d998a3524f656302 bytes=545042"
+  ],
+  "summary": {
+    "yield": {
+      "baseline_ns": 6.9575,
+      "candidate_ns": 6.3315,
+      "reduction_percent": 8.997484728710015
+    },
+    "tick": {
+      "baseline_ns": 7.868499999999999,
+      "candidate_ns": 6.7825,
+      "reduction_percent": 13.80186820868018
+    },
+    "read-ewram": {
+      "baseline_ns": 11.6625,
+      "candidate_ns": 8.503499999999999,
+      "reduction_percent": 27.086816720257247
+    },
+    "mem-cycles": {
+      "baseline_ns": 5.2615,
+      "candidate_ns": 4.9935,
+      "reduction_percent": 5.0936044854129054
+    },
+    "dispatch-hit": {
+      "baseline_ns": 13.000499999999999,
+      "candidate_ns": 12.448,
+      "reduction_percent": 4.2498365447482644
+    },
+    "alu-boundary": {
+      "baseline_ns": 14.400500000000001,
+      "candidate_ns": 12.603,
+      "reduction_percent": 12.482205478976427
+    },
+    "load-boundary": {
+      "baseline_ns": 32.308499999999995,
+      "candidate_ns": 27.0045,
+      "reduction_percent": 16.416732438831872
+    },
+    "mixed-5-boundaries": {
+      "baseline_ns": 100.983,
+      "candidate_ns": 85.561,
+      "reduction_percent": 15.271877444718418
+    }
+  },
+  "raw": [
+    {
+      "pair": 0,
+      "variant": "baseline",
+      "stdout": "yield,6.786\ntick,8.376\nread-ewram,11.556\nmem-cycles,5.253\ndispatch-hit,15.288\nalu-boundary,15.996\nload-boundary,49.784\nmixed-5-boundaries,162.251\nyield,6.875\ntick,7.527\nread-ewram,11.123\nmem-cycles,5.394\ndispatch-hit,12.691\nalu-boundary,13.473\nload-boundary,30.927\nmixed-5-boundaries,102.372\nyield,6.733\ntick,14.380\nread-ewram,10.801\nmem-cycles,4.993\ndispatch-hit,12.827\nalu-boundary,13.509\nload-boundary,31.118\nmixed-5-boundaries,115.817\nyield,8.866\ntick,10.417\nread-ewram,14.025\nmem-cycles,6.161\ndispatch-hit,19.334\nalu-boundary,20.574\nload-boundary,36.926\nmixed-5-boundaries,94.818\nyield,6.712\ntick,7.355\nread-ewram,13.400\nmem-cycles,5.358\ndispatch-hit,12.596\nalu-boundary,15.532\nload-boundary,30.660\nmixed-5-boundaries,135.192\nyield,7.024\ntick,8.327\nread-ewram,11.961\nmem-cycles,5.872\ndispatch-hit,12.800\nalu-boundary,14.751\nload-boundary,32.550\nmixed-5-boundaries,102.263\nyield,6.677\ntick,9.300\nread-ewram,13.514\nmem-cycles,4.929\ndispatch-hit,13.818\nalu-boundary,14.690\nload-boundary,33.549\nmixed-5-boundaries,100.788\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 0,
+      "variant": "candidate",
+      "stdout": "yield,6.515\ntick,7.132\nread-ewram,12.598\nmem-cycles,5.237\ndispatch-hit,17.097\nalu-boundary,20.396\nload-boundary,44.671\nmixed-5-boundaries,149.299\nyield,10.450\ntick,10.244\nread-ewram,12.218\nmem-cycles,6.540\ndispatch-hit,21.119\nalu-boundary,16.434\nload-boundary,30.972\nmixed-5-boundaries,149.636\nyield,10.390\ntick,10.050\nread-ewram,11.980\nmem-cycles,6.529\ndispatch-hit,20.925\nalu-boundary,13.123\nload-boundary,28.123\nmixed-5-boundaries,84.368\nyield,8.050\ntick,9.489\nread-ewram,10.528\nmem-cycles,4.852\ndispatch-hit,13.592\nalu-boundary,14.885\nload-boundary,29.821\nmixed-5-boundaries,115.186\nyield,12.651\ntick,9.522\nread-ewram,11.995\nmem-cycles,6.365\ndispatch-hit,21.425\nalu-boundary,20.511\nload-boundary,38.395\nmixed-5-boundaries,84.743\nyield,6.170\ntick,7.095\nread-ewram,8.371\nmem-cycles,5.021\ndispatch-hit,12.465\nalu-boundary,25.850\nload-boundary,45.223\nmixed-5-boundaries,144.005\nyield,10.243\ntick,9.893\nread-ewram,8.250\nmem-cycles,5.295\ndispatch-hit,12.964\nalu-boundary,24.773\nload-boundary,63.198\nmixed-5-boundaries,134.296\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 1,
+      "variant": "candidate",
+      "stdout": "yield,5.882\ntick,7.127\nread-ewram,10.558\nmem-cycles,5.167\ndispatch-hit,14.663\nalu-boundary,13.651\nload-boundary,30.548\nmixed-5-boundaries,95.559\nyield,6.141\ntick,7.685\nread-ewram,10.730\nmem-cycles,12.080\ndispatch-hit,26.476\nalu-boundary,20.247\nload-boundary,43.942\nmixed-5-boundaries,141.386\nyield,9.098\ntick,6.383\nread-ewram,8.453\nmem-cycles,4.763\ndispatch-hit,11.648\nalu-boundary,11.691\nload-boundary,25.200\nmixed-5-boundaries,86.690\nyield,6.679\ntick,6.509\nread-ewram,10.756\nmem-cycles,6.396\ndispatch-hit,20.934\nalu-boundary,20.100\nload-boundary,43.390\nmixed-5-boundaries,127.753\nyield,6.445\ntick,6.712\nread-ewram,8.463\nmem-cycles,4.713\ndispatch-hit,11.649\nalu-boundary,12.518\nload-boundary,24.600\nmixed-5-boundaries,101.908\nyield,6.181\ntick,6.276\nread-ewram,8.049\nmem-cycles,4.787\ndispatch-hit,11.704\nalu-boundary,11.860\nload-boundary,25.034\nmixed-5-boundaries,77.789\nyield,6.055\ntick,6.642\nread-ewram,8.237\nmem-cycles,4.705\ndispatch-hit,11.929\nalu-boundary,10.654\nload-boundary,25.262\nmixed-5-boundaries,78.727\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 1,
+      "variant": "baseline",
+      "stdout": "yield,5.820\ntick,7.527\nread-ewram,10.750\nmem-cycles,5.066\ndispatch-hit,12.716\nalu-boundary,12.697\nload-boundary,30.281\nmixed-5-boundaries,101.674\nyield,6.879\ntick,8.948\nread-ewram,16.069\nmem-cycles,6.631\ndispatch-hit,19.542\nalu-boundary,19.785\nload-boundary,44.961\nmixed-5-boundaries,115.366\nyield,7.001\ntick,8.389\nread-ewram,11.677\nmem-cycles,5.433\ndispatch-hit,12.824\nalu-boundary,14.367\nload-boundary,35.258\nmixed-5-boundaries,140.467\nyield,8.511\ntick,9.993\nread-ewram,12.946\nmem-cycles,4.779\ndispatch-hit,13.478\nalu-boundary,14.373\nload-boundary,30.533\nmixed-5-boundaries,100.890\nyield,6.924\ntick,7.505\nread-ewram,11.739\nmem-cycles,5.582\ndispatch-hit,21.747\nalu-boundary,22.184\nload-boundary,49.056\nmixed-5-boundaries,133.176\nyield,7.478\ntick,7.936\nread-ewram,12.058\nmem-cycles,4.845\ndispatch-hit,13.578\nalu-boundary,15.922\nload-boundary,39.982\nmixed-5-boundaries,112.732\nyield,7.293\ntick,7.358\nread-ewram,11.512\nmem-cycles,5.098\ndispatch-hit,11.810\nalu-boundary,14.106\nload-boundary,30.982\nmixed-5-boundaries,96.135\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 2,
+      "variant": "baseline",
+      "stdout": "yield,7.979\ntick,7.603\nread-ewram,11.329\nmem-cycles,4.618\ndispatch-hit,12.558\nalu-boundary,13.944\nload-boundary,30.371\nmixed-5-boundaries,92.486\nyield,7.981\ntick,7.608\nread-ewram,11.569\nmem-cycles,5.199\ndispatch-hit,13.036\nalu-boundary,14.315\nload-boundary,38.892\nmixed-5-boundaries,121.719\nyield,7.237\ntick,8.696\nread-ewram,11.784\nmem-cycles,5.504\ndispatch-hit,13.134\nalu-boundary,23.661\nload-boundary,42.175\nmixed-5-boundaries,138.982\nyield,8.463\ntick,10.185\nread-ewram,12.666\nmem-cycles,5.145\ndispatch-hit,12.317\nalu-boundary,12.989\nload-boundary,33.583\nmixed-5-boundaries,96.719\nyield,6.633\ntick,7.212\nread-ewram,11.123\nmem-cycles,5.460\ndispatch-hit,12.299\nalu-boundary,14.428\nload-boundary,30.109\nmixed-5-boundaries,94.714\nyield,6.722\ntick,7.047\nread-ewram,11.151\nmem-cycles,5.013\ndispatch-hit,13.758\nalu-boundary,13.753\nload-boundary,32.324\nmixed-5-boundaries,147.876\nyield,8.787\ntick,10.280\nread-ewram,10.930\nmem-cycles,5.068\ndispatch-hit,14.183\nalu-boundary,15.749\nload-boundary,33.912\nmixed-5-boundaries,99.911\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 2,
+      "variant": "candidate",
+      "stdout": "yield,5.689\ntick,6.680\nread-ewram,8.636\nmem-cycles,5.335\ndispatch-hit,13.572\nalu-boundary,13.145\nload-boundary,32.854\nmixed-5-boundaries,124.104\nyield,9.009\ntick,8.692\nread-ewram,10.138\nmem-cycles,5.661\ndispatch-hit,18.456\nalu-boundary,17.496\nload-boundary,30.297\nmixed-5-boundaries,82.623\nyield,6.789\ntick,7.332\nread-ewram,8.710\nmem-cycles,6.150\ndispatch-hit,12.623\nalu-boundary,13.808\nload-boundary,25.790\nmixed-5-boundaries,80.508\nyield,5.752\ntick,6.486\nread-ewram,9.074\nmem-cycles,5.102\ndispatch-hit,12.185\nalu-boundary,13.067\nload-boundary,24.982\nmixed-5-boundaries,84.257\nyield,6.592\ntick,6.393\nread-ewram,8.405\nmem-cycles,4.978\ndispatch-hit,12.655\nalu-boundary,12.019\nload-boundary,26.367\nmixed-5-boundaries,88.201\nyield,6.200\ntick,6.576\nread-ewram,8.759\nmem-cycles,4.905\ndispatch-hit,11.788\nalu-boundary,12.822\nload-boundary,27.593\nmixed-5-boundaries,81.711\nyield,6.082\ntick,6.502\nread-ewram,8.673\nmem-cycles,4.861\ndispatch-hit,12.178\nalu-boundary,12.630\nload-boundary,26.340\nmixed-5-boundaries,83.032\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 3,
+      "variant": "candidate",
+      "stdout": "yield,5.883\ntick,6.779\nread-ewram,8.842\nmem-cycles,4.864\ndispatch-hit,12.248\nalu-boundary,23.542\nload-boundary,37.726\nmixed-5-boundaries,95.625\nyield,6.671\ntick,7.062\nread-ewram,8.460\nmem-cycles,4.687\ndispatch-hit,11.970\nalu-boundary,10.685\nload-boundary,27.120\nmixed-5-boundaries,83.557\nyield,6.208\ntick,6.695\nread-ewram,8.085\nmem-cycles,4.832\ndispatch-hit,12.191\nalu-boundary,11.390\nload-boundary,25.704\nmixed-5-boundaries,80.308\nyield,6.134\ntick,6.239\nread-ewram,8.229\nmem-cycles,4.689\ndispatch-hit,14.879\nalu-boundary,17.997\nload-boundary,37.646\nmixed-5-boundaries,93.374\nyield,6.466\ntick,7.641\nread-ewram,8.488\nmem-cycles,5.212\ndispatch-hit,13.831\nalu-boundary,12.475\nload-boundary,27.643\nmixed-5-boundaries,90.185\nyield,6.398\ntick,6.786\nread-ewram,9.119\nmem-cycles,4.956\ndispatch-hit,12.379\nalu-boundary,22.710\nload-boundary,44.247\nmixed-5-boundaries,125.869\nyield,8.520\ntick,6.916\nread-ewram,8.149\nmem-cycles,4.915\ndispatch-hit,12.359\nalu-boundary,12.480\nload-boundary,27.532\nmixed-5-boundaries,84.299\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 3,
+      "variant": "baseline",
+      "stdout": "yield,8.137\ntick,9.200\nread-ewram,13.457\nmem-cycles,6.551\ndispatch-hit,14.749\nalu-boundary,16.363\nload-boundary,33.005\nmixed-5-boundaries,110.789\nyield,7.600\ntick,9.588\nread-ewram,14.008\nmem-cycles,6.749\ndispatch-hit,13.044\nalu-boundary,20.708\nload-boundary,30.190\nmixed-5-boundaries,110.578\nyield,7.712\ntick,8.173\nread-ewram,12.221\nmem-cycles,5.187\ndispatch-hit,12.965\nalu-boundary,14.763\nload-boundary,32.549\nmixed-5-boundaries,104.380\nyield,7.931\ntick,8.700\nread-ewram,11.957\nmem-cycles,7.163\ndispatch-hit,12.864\nalu-boundary,18.709\nload-boundary,32.821\nmixed-5-boundaries,104.614\nyield,8.073\ntick,7.414\nread-ewram,12.161\nmem-cycles,6.343\ndispatch-hit,13.339\nalu-boundary,13.794\nload-boundary,34.313\nmixed-5-boundaries,106.415\nyield,7.583\ntick,7.797\nread-ewram,15.264\nmem-cycles,7.206\ndispatch-hit,13.332\nalu-boundary,14.865\nload-boundary,32.824\nmixed-5-boundaries,126.577\nyield,9.372\ntick,8.720\nread-ewram,15.983\nmem-cycles,7.029\ndispatch-hit,19.827\nalu-boundary,19.865\nload-boundary,45.037\nmixed-5-boundaries,144.925\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 4,
+      "variant": "baseline",
+      "stdout": "yield,5.893\ntick,7.206\nread-ewram,10.747\nmem-cycles,4.982\ndispatch-hit,14.434\nalu-boundary,13.674\nload-boundary,29.924\nmixed-5-boundaries,94.766\nyield,5.816\ntick,7.075\nread-ewram,10.946\nmem-cycles,5.041\ndispatch-hit,12.136\nalu-boundary,13.475\nload-boundary,30.686\nmixed-5-boundaries,94.149\nyield,5.763\ntick,7.114\nread-ewram,11.333\nmem-cycles,4.946\ndispatch-hit,11.785\nalu-boundary,13.307\nload-boundary,29.524\nmixed-5-boundaries,94.555\nyield,5.889\ntick,7.198\nread-ewram,10.763\nmem-cycles,5.366\ndispatch-hit,11.867\nalu-boundary,12.950\nload-boundary,29.077\nmixed-5-boundaries,92.285\nyield,6.526\ntick,7.441\nread-ewram,11.411\nmem-cycles,4.968\ndispatch-hit,11.824\nalu-boundary,13.095\nload-boundary,29.489\nmixed-5-boundaries,91.824\nyield,5.883\ntick,7.046\nread-ewram,10.816\nmem-cycles,4.971\ndispatch-hit,12.191\nalu-boundary,13.189\nload-boundary,29.875\nmixed-5-boundaries,93.488\nyield,5.881\ntick,7.501\nread-ewram,11.200\nmem-cycles,4.957\ndispatch-hit,12.212\nalu-boundary,13.491\nload-boundary,29.813\nmixed-5-boundaries,95.324\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 4,
+      "variant": "candidate",
+      "stdout": "yield,5.644\ntick,6.365\nread-ewram,7.981\nmem-cycles,4.665\ndispatch-hit,11.614\nalu-boundary,12.002\nload-boundary,25.561\nmixed-5-boundaries,79.704\nyield,5.513\ntick,7.340\nread-ewram,8.182\nmem-cycles,4.718\ndispatch-hit,11.581\nalu-boundary,11.579\nload-boundary,25.383\nmixed-5-boundaries,92.770\nyield,6.353\ntick,6.291\nread-ewram,8.285\nmem-cycles,5.113\ndispatch-hit,12.721\nalu-boundary,12.396\nload-boundary,26.944\nmixed-5-boundaries,95.349\nyield,6.742\ntick,7.084\nread-ewram,8.740\nmem-cycles,5.019\ndispatch-hit,12.393\nalu-boundary,12.373\nload-boundary,27.154\nmixed-5-boundaries,88.782\nyield,6.907\ntick,7.106\nread-ewram,8.788\nmem-cycles,5.112\ndispatch-hit,11.758\nalu-boundary,14.181\nload-boundary,33.349\nmixed-5-boundaries,85.369\nyield,6.616\ntick,6.413\nread-ewram,8.036\nmem-cycles,4.992\ndispatch-hit,15.463\nalu-boundary,12.493\nload-boundary,27.062\nmixed-5-boundaries,88.701\nyield,6.631\ntick,7.238\nread-ewram,8.784\nmem-cycles,4.945\ndispatch-hit,12.459\nalu-boundary,12.609\nload-boundary,29.306\nmixed-5-boundaries,91.475\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 5,
+      "variant": "candidate",
+      "stdout": "yield,10.247\ntick,10.321\nread-ewram,11.600\nmem-cycles,5.727\ndispatch-hit,18.973\nalu-boundary,17.188\nload-boundary,26.268\nmixed-5-boundaries,81.029\nyield,5.923\ntick,6.551\nread-ewram,8.328\nmem-cycles,5.072\ndispatch-hit,12.280\nalu-boundary,12.597\nload-boundary,26.853\nmixed-5-boundaries,87.205\nyield,6.027\ntick,6.446\nread-ewram,8.276\nmem-cycles,4.175\ndispatch-hit,12.437\nalu-boundary,11.799\nload-boundary,26.178\nmixed-5-boundaries,91.994\nyield,6.394\ntick,6.670\nread-ewram,8.823\nmem-cycles,7.302\ndispatch-hit,14.997\nalu-boundary,12.820\nload-boundary,26.625\nmixed-5-boundaries,82.751\nyield,6.337\ntick,6.678\nread-ewram,7.760\nmem-cycles,4.755\ndispatch-hit,12.430\nalu-boundary,13.034\nload-boundary,26.715\nmixed-5-boundaries,88.867\nyield,6.268\ntick,6.454\nread-ewram,8.217\nmem-cycles,5.100\ndispatch-hit,11.502\nalu-boundary,11.200\nload-boundary,27.113\nmixed-5-boundaries,88.071\nyield,6.298\ntick,7.077\nread-ewram,8.868\nmem-cycles,4.849\ndispatch-hit,12.503\nalu-boundary,12.031\nload-boundary,26.613\nmixed-5-boundaries,86.846\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 5,
+      "variant": "baseline",
+      "stdout": "yield,6.590\ntick,8.388\nread-ewram,16.122\nmem-cycles,6.484\ndispatch-hit,15.257\nalu-boundary,15.804\nload-boundary,35.765\nmixed-5-boundaries,142.965\nyield,10.595\ntick,11.416\nread-ewram,11.725\nmem-cycles,5.270\ndispatch-hit,12.817\nalu-boundary,14.695\nload-boundary,30.510\nmixed-5-boundaries,100.861\nyield,7.507\ntick,7.911\nread-ewram,11.501\nmem-cycles,5.286\ndispatch-hit,13.098\nalu-boundary,15.465\nload-boundary,31.879\nmixed-5-boundaries,98.081\nyield,7.693\ntick,8.259\nread-ewram,11.389\nmem-cycles,5.091\ndispatch-hit,14.119\nalu-boundary,15.115\nload-boundary,30.478\nmixed-5-boundaries,93.454\nyield,6.657\ntick,7.293\nread-ewram,11.515\nmem-cycles,5.330\ndispatch-hit,13.981\nalu-boundary,14.285\nload-boundary,31.064\nmixed-5-boundaries,98.555\nyield,6.625\ntick,8.353\nread-ewram,11.905\nmem-cycles,5.510\ndispatch-hit,13.569\nalu-boundary,13.976\nload-boundary,31.122\nmixed-5-boundaries,104.626\nyield,7.317\ntick,7.826\nread-ewram,12.343\nmem-cycles,5.034\ndispatch-hit,12.317\nalu-boundary,14.640\nload-boundary,31.819\nmixed-5-boundaries,97.974\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 6,
+      "variant": "baseline",
+      "stdout": "yield,6.801\ntick,7.592\nread-ewram,15.276\nmem-cycles,5.014\ndispatch-hit,13.241\nalu-boundary,13.812\nload-boundary,31.962\nmixed-5-boundaries,103.860\nyield,6.851\ntick,6.887\nread-ewram,11.077\nmem-cycles,5.058\ndispatch-hit,12.759\nalu-boundary,13.983\nload-boundary,33.948\nmixed-5-boundaries,109.475\nyield,7.245\ntick,8.532\nread-ewram,12.777\nmem-cycles,5.928\ndispatch-hit,13.566\nalu-boundary,14.956\nload-boundary,39.993\nmixed-5-boundaries,147.064\nyield,8.851\ntick,10.361\nread-ewram,13.562\nmem-cycles,5.109\ndispatch-hit,12.160\nalu-boundary,13.878\nload-boundary,32.303\nmixed-5-boundaries,97.360\nyield,6.794\ntick,6.988\nread-ewram,11.648\nmem-cycles,5.275\ndispatch-hit,12.173\nalu-boundary,13.560\nload-boundary,32.314\nmixed-5-boundaries,96.398\nyield,6.942\ntick,7.469\nread-ewram,11.457\nmem-cycles,4.963\ndispatch-hit,11.509\nalu-boundary,13.464\nload-boundary,29.759\nmixed-5-boundaries,99.197\nyield,6.973\ntick,7.215\nread-ewram,11.102\nmem-cycles,5.137\ndispatch-hit,12.670\nalu-boundary,15.194\nload-boundary,30.876\nmixed-5-boundaries,99.534\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 6,
+      "variant": "candidate",
+      "stdout": "yield,6.207\ntick,6.654\nread-ewram,8.333\nmem-cycles,5.019\ndispatch-hit,13.080\nalu-boundary,12.077\nload-boundary,29.225\nmixed-5-boundaries,82.577\nyield,5.784\ntick,6.822\nread-ewram,8.279\nmem-cycles,4.744\ndispatch-hit,12.254\nalu-boundary,12.737\nload-boundary,25.981\nmixed-5-boundaries,82.721\nyield,6.334\ntick,7.114\nread-ewram,8.870\nmem-cycles,4.863\ndispatch-hit,11.974\nalu-boundary,15.611\nload-boundary,28.841\nmixed-5-boundaries,77.808\nyield,6.057\ntick,6.592\nread-ewram,8.345\nmem-cycles,4.995\ndispatch-hit,11.877\nalu-boundary,11.684\nload-boundary,25.834\nmixed-5-boundaries,80.521\nyield,6.329\ntick,7.051\nread-ewram,8.671\nmem-cycles,4.875\ndispatch-hit,13.252\nalu-boundary,12.813\nload-boundary,26.238\nmixed-5-boundaries,88.882\nyield,6.852\ntick,6.802\nread-ewram,9.645\nmem-cycles,5.212\ndispatch-hit,12.893\nalu-boundary,11.988\nload-boundary,25.778\nmixed-5-boundaries,80.113\nyield,6.341\ntick,7.304\nread-ewram,8.603\nmem-cycles,4.808\ndispatch-hit,11.813\nalu-boundary,12.103\nload-boundary,26.947\nmixed-5-boundaries,79.347\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 7,
+      "variant": "candidate",
+      "stdout": "yield,5.850\ntick,7.013\nread-ewram,8.519\nmem-cycles,5.042\ndispatch-hit,11.866\nalu-boundary,12.138\nload-boundary,33.705\nmixed-5-boundaries,81.561\nyield,6.046\ntick,6.397\nread-ewram,8.307\nmem-cycles,4.743\ndispatch-hit,11.884\nalu-boundary,12.253\nload-boundary,25.659\nmixed-5-boundaries,80.475\nyield,6.117\ntick,6.300\nread-ewram,8.194\nmem-cycles,4.874\ndispatch-hit,12.076\nalu-boundary,11.670\nload-boundary,25.073\nmixed-5-boundaries,79.351\nyield,6.060\ntick,6.452\nread-ewram,8.184\nmem-cycles,5.073\ndispatch-hit,12.370\nalu-boundary,12.549\nload-boundary,25.692\nmixed-5-boundaries,80.104\nyield,6.269\ntick,6.301\nread-ewram,8.404\nmem-cycles,4.735\ndispatch-hit,12.837\nalu-boundary,11.464\nload-boundary,25.530\nmixed-5-boundaries,78.787\nyield,6.285\ntick,6.230\nread-ewram,8.342\nmem-cycles,8.681\ndispatch-hit,14.315\nalu-boundary,12.076\nload-boundary,27.384\nmixed-5-boundaries,81.613\nyield,6.460\ntick,7.782\nread-ewram,8.532\nmem-cycles,10.161\ndispatch-hit,15.010\nalu-boundary,18.270\nload-boundary,26.654\nmixed-5-boundaries,85.753\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    },
+    {
+      "pair": 7,
+      "variant": "baseline",
+      "stdout": "yield,9.586\ntick,9.226\nread-ewram,11.842\nmem-cycles,6.552\ndispatch-hit,14.420\nalu-boundary,19.538\nload-boundary,36.585\nmixed-5-boundaries,105.682\nyield,9.989\ntick,8.151\nread-ewram,12.299\nmem-cycles,5.525\ndispatch-hit,14.406\nalu-boundary,17.796\nload-boundary,33.990\nmixed-5-boundaries,119.459\nyield,6.727\ntick,7.961\nread-ewram,13.192\nmem-cycles,5.411\ndispatch-hit,14.487\nalu-boundary,15.294\nload-boundary,34.388\nmixed-5-boundaries,101.076\nyield,7.017\ntick,7.640\nread-ewram,11.440\nmem-cycles,5.737\ndispatch-hit,13.072\nalu-boundary,14.174\nload-boundary,34.953\nmixed-5-boundaries,98.472\nyield,6.938\ntick,9.560\nread-ewram,11.578\nmem-cycles,5.027\ndispatch-hit,12.565\nalu-boundary,13.513\nload-boundary,31.053\nmixed-5-boundaries,99.396\nyield,6.677\ntick,7.050\nread-ewram,11.468\nmem-cycles,5.011\ndispatch-hit,12.760\nalu-boundary,14.207\nload-boundary,33.405\nmixed-5-boundaries,100.019\nyield,6.261\ntick,7.014\nread-ewram,10.852\nmem-cycles,5.457\ndispatch-hit,12.743\nalu-boundary,14.773\nload-boundary,31.157\nmixed-5-boundaries,98.938\ncycles=86800000 frames=309 pc=8000100 reg=0\nstate_fnv1a=d998a3524f656302 bytes=545042\n"
+    }
+  ],
+  "environment": {
+    "host": "Linux x86_64",
+    "runtime": "GCC 13.3.0 Release -O3 -DNDEBUG",
+    "caller": "GCC 13.3.0 -O1 -g0 -DNDEBUG",
+    "pairs": 8,
+    "samples_per_path": 56,
+    "affinity": "single permitted CPU",
+    "baseline_engine": "e353848ca8e82e7860469a235784a000102e7781",
+    "qualification": "ROM-free synthetic microbenchmark; no Android device or APK measurement"
+  }
+}

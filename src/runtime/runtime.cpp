@@ -20,6 +20,7 @@
 // step_once() becomes a real `runtime_dispatch` driver.
 
 #include "runtime.h"
+#include "runtime_context.h"
 #include "suspend_guard.h"
 #include "multiplayer_launch.h"
 #include "view_config.h"
@@ -2161,6 +2162,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     set_active_ppu(&ppu);
     runtime_init(&bus);
     reset_recomp_cpu();
+    RuntimeArmContext execution_context;
+    runtime_set_owned_context(&execution_context);
+    struct ReleaseExecutionContext {
+        ~ReleaseExecutionContext() { runtime_set_owned_context(nullptr); }
+    } release_execution_context;
     self_heal_reset();  // fresh coverage tally for this machine bring-up
 
     // Skip the BIOS intro. On a fresh boot (never when resuming a savestate),
@@ -2251,14 +2257,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     bool host_paused = false;
 
     auto pump_idle = [&](uint32_t max_cycles) -> uint32_t {
-        uint32_t chunk = ppu.cycles_until_next_event();
-        uint32_t until_timer = bus.io().cycles_until_next_timer_event();
-        uint32_t until_sample = bus.audio().cycles_until_next_sample();
-        if (until_timer < chunk) chunk = until_timer;
-        if (until_sample < chunk) chunk = until_sample;
-        if (chunk == 0 || chunk == 0xFFFFFFFFu) chunk = 1;
-        if (chunk > max_cycles) chunk = max_cycles;
-        runtime_tick(chunk);
+        const uint32_t chunk = runtime_pump_idle(max_cycles);
         cycles_elapsed += chunk;
         last_step_cycles += chunk;
         return chunk;
@@ -2313,30 +2312,39 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         // dispatch table so the next runtime_dispatch can use them. Cheap when
         // idle (a single atomic load); see overlay_loader.cpp.
         gbarecomp::overlay_drain_ready();
-        if (bus.io().halted()) {
-            ++halt_steps;
-            uint32_t idle_budget = gba::GbaPpu::kCyclesPerFrame;
-            while (bus.io().halted() && idle_budget != 0) {
-                uint32_t chunk = pump_idle(idle_budget);
-                idle_budget -= chunk;
+        try {
+            if (bus.io().halted()) {
+                ++halt_steps;
+                uint32_t idle_budget = gba::GbaPpu::kCyclesPerFrame;
+                while (bus.io().halted() && idle_budget != 0) {
+                    uint32_t chunk = pump_idle(idle_budget);
+                    idle_budget -= chunk;
+                }
+                ++taken;
+                sync_frame_counter();
+                return true;
             }
-            ++taken;
-            sync_frame_counter();
-            return true;
-        }
 
-        // Co-simulation "interp" backend: interpret one guest instruction rather
-        // than dispatching generated code. Reuses runtime_tick/runtime_swi so the
-        // device/IRQ/BIOS/clock path is identical to the recomp backend; only
-        // main-thread instruction execution differs. See COSIM_ORACLE.md §1.
-        const uint32_t step_pc = g_cpu.R[15] & ~1u;
-        const int step_thumb = (g_cpu.cpsr & CPSR_T_BIT) != 0;
-        if (g_force_interp ||
-            (g_runtime_force_interp_hook &&
-             g_runtime_force_interp_hook(step_pc, step_thumb))) {
-            runtime_force_interp_step();
-        } else {
-            runtime_dispatch(g_cpu.R[15]);
+            // Co-simulation "interp" backend: interpret one guest instruction rather
+            // than dispatching generated code. Reuses runtime_tick/runtime_swi so the
+            // device/IRQ/BIOS/clock path is identical to the recomp backend; only
+            // main-thread instruction execution differs. See COSIM_ORACLE.md §1.
+            const uint32_t step_pc = g_cpu.R[15] & ~1u;
+            const int step_thumb = (g_cpu.cpsr & CPSR_T_BIT) != 0;
+            if (!execution_context.interrupts.empty()) {
+                runtime_resume_irq();
+            } else if (g_force_interp ||
+                (g_runtime_force_interp_hook &&
+                 g_runtime_force_interp_hook(step_pc, step_thumb))) {
+                runtime_force_interp_step();
+            } else {
+                runtime_dispatch(g_cpu.R[15]);
+            }
+        } catch (const RuntimeDispatchYield&) {
+            // All guest residue belongs to execution_context. A future
+            // suspension may unwind native callers without cancelling BLs.
+            runtime_call_stack_restore(runtime_call_stack_data(), runtime_call_stack_depth());
+            runtime_set_return_yield(false); // unwind is complete; idle IRQs may dispatch
         }
         ++taken;
         sync_frame_counter();

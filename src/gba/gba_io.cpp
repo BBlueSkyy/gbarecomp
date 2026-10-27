@@ -595,14 +595,6 @@ void GbaIo::set_synthesized_keyinput(uint16_t keys) {
     store_u16(&io_[IoReg::KEYINPUT], composed_keyinput());
 }
 
-bool GbaIo::irq_pending() const {
-    uint16_t ie_v = load_u16(&io_[IoReg::IE]);
-    uint16_t if_v = load_u16(&io_[IoReg::IF]);
-    if ((ie_v & if_v) == 0) return false;
-    // IME is a 16-bit register; only bit 0 is meaningful.
-    return (load_u16(&io_[IoReg::IME]) & 0x0001u) != 0;
-}
-
 uint16_t GbaIo::ie()      const { return load_u16(&io_[IoReg::IE]); }
 uint16_t GbaIo::if_reg()  const { return load_u16(&io_[IoReg::IF]); }
 bool     GbaIo::ime()     const { return (load_u16(&io_[IoReg::IME]) & 1u) != 0; }
