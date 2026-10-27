@@ -2989,6 +2989,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         uint64_t hud_audio_us = 0, hud_pump_us = 0, hud_pacer_us = 0;
         uint64_t hud_prev_scan_ns = 0, hud_prev_bridge_ns = 0;
         uint64_t hud_prev_interp = 0, hud_prev_bridges = 0, hud_prev_ram = 0;
+        uint64_t hud_prev_cycles = 0;
 #endif
         FramePhaseRing() {
             const char* p = std::getenv("GBARECOMP_FRAME_PHASE");
@@ -3039,6 +3040,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 hud_prev_interp = gbarecomp::self_heal_interpreted_insns();
                 hud_prev_bridges = g_perf_bridge_calls;
                 hud_prev_ram = g_perf_ram_bridge_calls;
+                hud_prev_cycles = g_runtime_cycles;
                 return;
             }
             ++hud_frames;
@@ -3059,10 +3061,13 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 const uint64_t ram = g_perf_ram_bridge_calls;
                 const uint64_t scan_ns = g_prof_scanline_ns;
                 const uint64_t bridge_ns = g_perf_bridge_ns;
+                const uint64_t guest_cycles = g_runtime_cycles;
+                const double speed_percent =
+                    (guest_cycles - hud_prev_cycles) / elapsed_s / 16777216.0 * 100.0;
                 auto& lines = g_live_perf_hud.lines;
                 std::snprintf(lines[0], sizeof(lines[0]),
-                              "DRAGON BALL  |  %.1f FPS  |  %.1f ms/frame",
-                              fps, 1000.0 / fps);
+                              "DRAGON BALL | %.1f FPS | GBA SPEED %.0f%%",
+                              fps, speed_percent);
                 std::snprintf(lines[1], sizeof(lines[1]),
                               "GUEST %.1f ms  |  HOST VIDEO %.1f ms",
                               hud_guest_us * ms_per_us,
@@ -3097,6 +3102,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 hud_prev_interp = interp;
                 hud_prev_bridges = bridges;
                 hud_prev_ram = ram;
+                hud_prev_cycles = guest_cycles;
             }
 #endif
         }
