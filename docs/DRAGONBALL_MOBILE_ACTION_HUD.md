@@ -54,6 +54,42 @@ a costly shader. Both L and R specials glow only when the same shared gauge
 appears completely charged. Their actual availability/damage remains wholly
 controlled by the original game — the UI does not simulate or grant energy.
 
+## Visual redesign to match the approved mobile mockup
+
+The initial vector proof-of-concept built only rudimentary circles and icons;
+the owner's screenshot showed its mismatch with the approved picture. This
+branch now replaces the placeholder *entire mobile-skin drawing path* with
+`src/runtime/mobile_touch_skin.h`:
+
+- **D-pad**: four independent dark glass-like translucent directional tiles
+  with silver outlines, arrow glyphs, a central hub, and thin pale-blue
+  concentric rings (same original directional hit detection).
+- **R/Ki**: blue enamel, white-hot orb and several cyan energy streaks.
+- **B/punch**: red enamel, peach clenched fist with individual knuckles,
+  thumb and wrist.
+- **L/Power Pole**: brown enamel and one diagonal orange/gold staff with
+  highlights and dark outlines (only one such button; no L shoulder pill).
+- **A/jump**: green enamel, white leaping fighter silhouette and arrow,
+  to the left of the staff, never overlapping its touch circle.
+- Thin metallic outer rims and layered translucent highlights on every
+  action; subtle permanent border, with **intense pulsing cyan/blue outlines
+  only at confirmed full Ki gauge**. Pressed buttons visibly compress.
+- START and SELECT also receive smaller translucent dark glass pills.
+
+All art is drawn procedurally through the existing SDL/ImGui HostOverlay.
+It does **not** reuse pixels, cropped art or a generated PNG from the concept
+image; it is a deliberately lightweight approximation of the approved styling.
+The host can draw icons without font support, internet, external files or a
+new shader backend. The style is only enabled in Dragon Ball's opt-in
+`mobile_action_hud`; other games keep the generic pad. A ROM-free fake
+HostOverlay smoke test for idle/ready/pressed drawing lives in
+`tests/runtime/mobile_action_skin_test.cpp`.
+
+**Verification still required**: The new vector skin was reviewed statically
+but has not been compiled or visually verified on Android. Pixel-for-pixel
+identity with the concept image is not claimed. Inspect screenshot differences
+on the Moto G100 and adjust dimensions, alpha and icon strokes if needed.
+
 ## Validation
 
 - Compiled an isolated C++20 ROM-free meter probe with `-Wall -Wextra -Werror`
