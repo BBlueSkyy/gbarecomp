@@ -33,6 +33,7 @@
 #include "host_platform.h"
 #include "host_window.h"
 #include "host_overlay.h"
+#include "runtime_perf_hot.h"
 #include "touch_input.h"
 #include "runtime_arm.h"
 #include "runtime_bus_bridge.h"
@@ -129,14 +130,17 @@ namespace {
 // Callback runs on the rendering/guest thread, so these strings need no locks.
 struct LivePerfHud {
     void (*previous_overlay)(gbarecomp::HostOverlay*) = nullptr;
-    char lines[7][128] = {
+    char lines[10][128] = {
         "DRAGON BALL | LIVE PERFORMANCE",
         "Collecting first second of frame samples...",
         "GUEST: -- | VIDEO: --",
         "BRIDGE: -- | INTERP: --",
         "PPU SCAN: -- | RAM BRIDGES: --",
         "AUDIO: -- | INPUT: -- | WAIT: --",
-        "Counters update every ~1 second."
+        "Counters update every ~1 second.",
+        "HOT 1: waiting for data...",
+        "HOT 2: waiting for data...",
+        "HOT 3: waiting for data..."
     };
 };
 LivePerfHud g_live_perf_hud;
@@ -150,9 +154,9 @@ void draw_live_perf_hud(gbarecomp::HostOverlay* ov) {
     const float x = 16.0f + static_cast<float>(safe.left);
     const float y = 10.0f + static_cast<float>(safe.top);
     const auto space = gbarecomp::OverlaySpace::Drawable;
-    ov->fill_rect(x, y, 850.0f, 226.0f, 9.0f,
+    ov->fill_rect(x, y, 980.0f, 319.0f, 9.0f,
                   {4, 11, 22, 220}, space);
-    for (int row = 0; row < 7; ++row) {
+    for (int row = 0; row < 10; ++row) {
         const gbarecomp::OverlayColor color =
             row == 0 ? gbarecomp::OverlayColor{117, 226, 255, 255}
                      : gbarecomp::OverlayColor{250, 250, 250, 255};
@@ -3064,6 +3068,8 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 const uint64_t scan_ns = g_prof_scanline_ns;
                 const uint64_t bridge_ns = g_perf_bridge_ns;
                 const uint64_t guest_cycles = g_runtime_cycles;
+                RuntimePerfHotBridge hot_sites[3]{};
+                runtime_perf_bridge_top_sample(hot_sites);
                 const double speed_percent =
                     (guest_cycles - hud_prev_cycles) / elapsed_s / 16777216.0 * 100.0;
                 auto& lines = g_live_perf_hud.lines;
@@ -3094,8 +3100,24 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                               hud_audio_us * ms_per_us, hud_pump_us * ms_per_us,
                               hud_pacer_us * ms_per_us);
                 std::snprintf(lines[6], sizeof(lines[6]),
-                              "DISTINCT DISPATCH MISSES %u  |  1s average",
-                              gbarecomp::self_heal_distinct_misses());
+                              "DISPATCH MISSES %u (total) | ACTIVE PC %08X",
+                              gbarecomp::self_heal_distinct_misses(),
+                              runtime_perf_bridge_active_pc());
+                for (unsigned rank = 0; rank < 3; ++rank) {
+                    const auto& h = hot_sites[rank];
+                    if (h.calls) {
+                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
+                                      "HOT %u  %08X %c | %.1f ms | %llu calls | %llu k instr",
+                                      rank + 1, h.pc, h.thumb ? 'T' : 'A',
+                                      h.elapsed_ns / 1000000.0,
+                                      static_cast<unsigned long long>(h.calls),
+                                      static_cast<unsigned long long>(
+                                          h.instructions / 1000));
+                    } else {
+                        std::snprintf(lines[7+rank], sizeof(lines[7+rank]),
+                                      "HOT %u  no completed bridge this second", rank + 1);
+                    }
+                }
                 hud_start_ns = t5;
                 hud_frames = 0;
                 hud_guest_us = hud_render_us = hud_present_us = 0;
