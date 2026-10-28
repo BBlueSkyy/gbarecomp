@@ -77,9 +77,9 @@ inline void draw_mask(HostOverlay& ov, const std::uint64_t (&mask)[64],
     }
 }
 inline void draw_fist(HostOverlay& ov, float x, float y, float r) {
-    draw_mask(ov, fist, x, y, r, {255,227,174,250}, {255,181,117,250});
+    draw_mask(ov, fist, x, y, r, {242,242,242,248}, {168,168,168,246});
 }
 inline void draw_jump(HostOverlay& ov, float x, float y, float r) {
-    draw_mask(ov, jump, x, y, r, {224,255,247,250}, {213,255,238,250});
+    draw_mask(ov, jump, x, y, r, {242,242,242,248}, {168,168,168,246});
 }
 } // namespace gbarecomp::mobile_reference
