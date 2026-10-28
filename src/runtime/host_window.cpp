@@ -686,6 +686,10 @@ PadLayout compute_pad_layout(const Backend* b) {
     const float band_avail = (bottom - static_cast<float>(g.y + g.height)) / mm;
     float s = std::clamp(static_cast<float>(b->pad_scale_percent) / 100.0f,
                          0.8f, 1.2f);
+    // Title-only compact HUD. Keep the existing user scale slider useful:
+    // the 80% factor applies after its setting, to artwork AND hit geometry.
+    // Other titles retain their existing controller dimensions.
+    if (b->mobile_action_hud) s *= 0.80f;
     // Keep both sides separated even when enlarged on a narrower display.
     s = std::min(s, avail_w / need_w);
     if (dw < dh && band_avail >= kBandNeed * 0.65f)
@@ -782,9 +786,13 @@ PadLayout compute_pad_layout(const Backend* b) {
         // SELECT has neither visual geometry nor a hit region in this HUD.
         p.select = {};
         const float mid = (left + right) * .5f;
-        const float w = 8.f * s * mm, h = 6.f * s * mm;
-        p.back = {mid - 9.f*s*mm - w*.5f, bottom-margin-h, w, h};
-        p.start = {mid + 9.f*s*mm - w*.5f, bottom-margin-h, w, h};
+        const float back_w = 8.5f*s*mm, back_h = 5.6f*s*mm;
+        const float play_w = 15.f*s*mm, play_h = 6.3f*s*mm;
+        // BACK below the D-pad; PLAY centered, as in the approved mockup.
+        // No SELECT rectangle or invisible SELECT hitbox.
+        p.back = {left + margin, bottom - margin - back_h, back_w, back_h};
+        p.start = {mid - play_w*.5f, bottom - margin - play_h,
+                   play_w, play_h};
     }
     // Generic games retain their movable toggle; for the Dragon Ball HUD
     // it is never drawn or hit-tested (pad_toggle_available() is false).
