@@ -415,7 +415,9 @@ void TouchHub::submit_locked(TouchEvent event) {
         pending_events_.erase(pending_events_.begin(),
                               pending_events_.end() - kPendingCap);
     std::vector<Gesture> gestures;
-    recognizer_.on_event(event, gestures);
+    // HUD edges already have an owner; do not turn their release/hold into
+    // a second game Tap or an engine settings shortcut.
+    if (event.control == TouchControl::None) recognizer_.on_event(event, gestures);
     push_gestures_locked(gestures);
 }
 

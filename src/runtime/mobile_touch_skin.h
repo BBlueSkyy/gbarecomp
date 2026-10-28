@@ -236,6 +236,36 @@ inline void dpad(HostOverlay& o, Circle d, uint16_t held) {
     }
 }
 
+// Small neutral-grey navigation controls, matching the four D-pad keys.
+// Vector glyphs work without a host font (including SDL's fallback renderer).
+inline void navigation(HostOverlay& o,float x,float y,float w,float h,
+                       bool play,bool down) {
+    const float r=h*.5f, cy=y+r, left=x+r, right=x+w-r;
+    const Color fill=down?Color{104,111,121,95}:Color{70,75,82,32};
+    const Color edge=down?Color{230,233,238,198}:Color{174,180,187,118};
+    const Color ink=down?Color{249,250,252,228}:Color{235,238,243,210};
+    const float t=std::max(1.4f,h*.055f), cx=x+w*.5f;
+    // Fixed spans avoid SDL fill_circle's heap-backed tessellation per frame.
+    for(int i=0;i<12;++i){const float dy=(float(i)+.5f)/6.f-1.f;
+        const float cap=r*std::sqrt(std::max(0.f,1.f-dy*dy));
+        o.fill_rect(left-cap,y+h*float(i)/12.f,right-left+2.f*cap,h/12.f+.5f,0,fill,D);
+    }
+    line(o,left,y,right,y,t,edge);line(o,left,y+h,right,y+h,t,edge);
+    o.arc(left,cy,r,t,.5f,1.f,edge,D);o.arc(right,cy,r,t,0.f,.5f,edge,D);
+    if(play) {
+        // Filled right-pointing triangle, bounded spans; no font allocation.
+        for(int i=0;i<12;++i){const float dx=float(i)/12.f;
+            const float half=h*.25f*(1.f-dx);
+            o.fill_rect(cx-h*.16f+dx*h*.42f,cy-half,h*.035f+1.f,2.f*half,0,ink,D);}
+    } else {
+        // Hooked return arrow, deliberately distinct from Android system Back.
+        line(o,cx+h*.22f,cy-h*.16f,cx+h*.22f,cy+h*.15f,t,ink);
+        line(o,cx+h*.22f,cy+h*.15f,cx-h*.22f,cy+h*.15f,t,ink);
+        line(o,cx-h*.22f,cy+h*.15f,cx-h*.04f,cy-h*.03f,t,ink);
+        line(o,cx-h*.22f,cy+h*.15f,cx-h*.04f,cy+h*.33f,t,ink);
+    }
+}
+
 inline void draw(HostOverlay& o,const Layout& l,uint16_t held,
                  bool ready,std::uint32_t host_ms) {
     dpad(o,l.dpad,held);

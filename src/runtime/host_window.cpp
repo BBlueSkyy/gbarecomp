@@ -371,6 +371,7 @@ struct Backend {
         float start_x = 0.0f, start_y = 0.0f;
         float grab_dx = 0.0f, grab_dy = 0.0f;  // toggle centre - finger
         bool routed = false;
+        TouchControl control = TouchControl::None;
     };
     std::array<TouchPoint, 10> touches{};
     // Virtual gamepad capability (Android by default; desktop via
@@ -644,7 +645,7 @@ struct PadCircle { float x = 0, y = 0, r = 0; };
 struct PadRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool contains(float px, float py, float pad = 0.0f) const {
-        return px >= x - pad && py >= y - pad &&
+        return w > 0 && h > 0 && px >= x - pad && py >= y - pad &&
                px <= x + w + pad && py <= y + h + pad;
     }
 };
@@ -653,7 +654,7 @@ struct PadLayout {
     float dpad_thick = 0;
     PadCircle a, b;
     PadCircle pole, ki; // only used in title-specific mobile layout
-    PadRect l, r, select, start;
+    PadRect l, r, select, start, back;
     PadRect toggle;
 };
 
@@ -741,7 +742,7 @@ PadLayout compute_pad_layout(const Backend* b) {
         p.select = {mid - pill_w - 3.0f * mm, pills_y, pill_w, pill_h};
         p.start = {mid + 3.0f * mm, pills_y, pill_w, pill_h};
     }
-    if (b->mobile_action_hud && dw >= dh) {
+    if (b->mobile_action_hud) {
         // Approved reference #1: B/punch at upper right, R/Ki below,
         // A/jump at lower right and L/Power Pole to the left of jump.
         // Preserve the same physical four-button hit regions/multitouch
@@ -751,10 +752,15 @@ PadLayout compute_pad_layout(const Backend* b) {
         const float rail_min = 2.0f * button_r + 2.0f * margin;
         const float x = rail >= rail_min
             ? right - rail * 0.5f : right - margin - button_r;
-        const float vertical = bottom - top;
+        const float mobile_top = dw < dh
+            ? std::max(top, float(g.y + g.height)) : top;
+        const float vertical = bottom - mobile_top;
         const float last_y = std::min(bottom - margin - button_r,
-                                      top + vertical * 0.79f);
-        const float top_y = top + margin + button_r;
+                                      mobile_top + vertical * 0.79f);
+        // If portrait's lower band is too short, overlay the image rather
+        // than collapse B/R/A into one hit region. Respect the full safe area.
+        const float top_y = std::max(top + margin + button_r,
+            std::min(mobile_top + margin + button_r,last_y - 4.60f*button_r));
         // Keep the vertical spacing when screen height allows it, but
         // contain the whole stack within its safe display rectangle.
         const float gap = std::min(2.30f * button_r,
@@ -770,6 +776,15 @@ PadLayout compute_pad_layout(const Backend* b) {
         // Shoulder keys are the two round special buttons, never duplicates.
         p.l = {};
         p.r = {};
+    }
+    if (b->mobile_action_hud && b->touch_policy) {
+        // Title navigation uses its policy, including sub-VBlank short taps.
+        // SELECT has neither visual geometry nor a hit region in this HUD.
+        p.select = {};
+        const float mid = (left + right) * .5f;
+        const float w = 8.f * s * mm, h = 6.f * s * mm;
+        p.back = {mid - 9.f*s*mm - w*.5f, bottom-margin-h, w, h};
+        p.start = {mid + 9.f*s*mm - w*.5f, bottom-margin-h, w, h};
     }
     // Generic games retain their movable toggle; for the Dragon Ball HUD
     // it is never drawn or hit-tested (pad_toggle_available() is false).
@@ -811,7 +826,7 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     if (in_circle(p.b, 1.3f)) buttons |= 1u << 1;
     const float pad = 2.0f * mm;
     if (p.select.contains(x, y, pad)) buttons |= 1u << 2;
-    if (p.start.contains(x, y, pad)) buttons |= 1u << 3;
+    if (p.back.w == 0 && p.start.contains(x, y, pad)) buttons |= 1u << 3;
     if (p.ki.r > 0.0f) {
         if (in_circle(p.ki, 1.08f)) buttons |= 1u << 8;
         if (in_circle(p.pole, 1.08f)) buttons |= 1u << 9;
@@ -865,6 +880,14 @@ uint16_t active_touch_buttons(const Backend* b) {
 
 void clear_touches(Backend* b) {
     if (!b) return;
+    // A short HUD tap may already have left the host finger table and be
+    // queued in the game policy. Cancel that owner on focus/lifecycle loss.
+    if (b->mobile_action_hud && b->touch_policy) {
+        TouchEvent cancel;
+        cancel.phase = TouchPhase::Cancel;
+        cancel.t_ms = touch_clock_ms();
+        TouchHub::instance().submit(cancel);
+    }
     for (auto& touch : b->touches) touch = {};
 }
 
@@ -1112,20 +1135,15 @@ void draw_touch_pad(Backend* b, HostOverlay& ov) {
             mm
         };
         mobile_skin::draw(ov,skin,held,b->special_ready,ov.host_ms());
-        auto small_pill = [&](const PadRect& r,int bit,const char* txt) {
-            const bool down=on(bit);
-            ov.fill_rect(r.x,r.y,r.w,r.h,r.h*0.50f,
-                down ? OverlayColor{65,145,202,197}
-                     : OverlayColor{26,37,52,156}, S);
-            ov.stroke_rect(r.x,r.y,r.w,r.h,r.h*0.50f,
-                std::max(1.4f,mm*.20f), {204,226,245,205}, S);
-            if(ov.text_supported())
-                ov.text(r.x+r.w*.50f,r.y+r.h*.18f,
-                    std::min(r.h*.60f,mm*3.2f),
-                    {249,252,255,235},txt,OverlayAlign::Center,S);
-        };
-        small_pill(p.select,2,"SELECT");
-        small_pill(p.start,3,"START");
+        if (b->touch_policy) {
+            bool start_down=false, back_down=false;
+            for (const auto& t : b->touches) if (t.active) {
+                start_down |= t.control == TouchControl::Start;
+                back_down |= t.control == TouchControl::Back;
+            }
+            mobile_skin::navigation(ov,p.back.x,p.back.y,p.back.w,p.back.h,false,back_down);
+            mobile_skin::navigation(ov,p.start.x,p.start.y,p.start.w,p.start.h,true,start_down);
+        }
         return;
     }
 
@@ -3314,12 +3332,13 @@ HostWindow::Events HostWindow::pump() {
             const float py = e.tfinger.y * static_cast<float>(b->last_drawable_h);
             const TouchSource source = e.tfinger.touchId == SDL_MOUSE_TOUCHID
                 ? TouchSource::Mouse : TouchSource::Finger;
-            auto route = [&](TouchPhase phase) {
+            auto route = [&](TouchPhase phase, TouchControl control = TouchControl::None) {
                 TouchEvent te;
                 te.t_ms = touch_clock_ms();
                 te.pointer = static_cast<std::int32_t>(e.tfinger.fingerId & 0x7FFFFFFF);
                 te.phase = phase;
                 te.source = source;
+                te.control = control;
                 te.drawable_x = px;
                 te.drawable_y = py;
                 te.in_view = presentation_point_to_logical(
@@ -3342,6 +3361,14 @@ HostWindow::Events HostWindow::pump() {
                         touch->toggle = true;
                         touch->grab_dx = pad.toggle.x + pad.toggle.w * 0.5f - px;
                         touch->grab_dy = pad.toggle.y + pad.toggle.h * 0.5f - py;
+                    } else if (b->mobile_action_hud && b->touch_policy &&
+                               b->pad_visible && b->touch_controls &&
+                               (pad.back.contains(px,py,2.f*b->px_per_mm) ||
+                                pad.start.contains(px,py,2.f*b->px_per_mm))) {
+                        touch->routed = true;
+                        touch->control = pad.back.contains(px,py,2.f*b->px_per_mm)
+                            ? TouchControl::Back : TouchControl::Start;
+                        route(TouchPhase::Down,touch->control);
                     } else if (buttons) {
                         touch->pad = true;
                         touch->buttons = buttons;
@@ -3357,7 +3384,7 @@ HostWindow::Events HostWindow::pump() {
                     // Sliding between pad buttons follows the finger.
                     touch->buttons = pad_buttons_at(pad, px, py, b->px_per_mm);
                 } else if (touch->routed) {
-                    route(e.type == SDL_FINGERUP ? TouchPhase::Up : TouchPhase::Move);
+                    route(e.type == SDL_FINGERUP ? TouchPhase::Up : TouchPhase::Move, touch->control);
                 } else if (touch->toggle) {
                     // Only generic titles can reach this movable toggle.
                     const float slop = 2.5f * b->px_per_mm;
