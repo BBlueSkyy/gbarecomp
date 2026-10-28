@@ -1572,7 +1572,7 @@ PresentationLayout current_presentation_layout(Backend* b, int* out_w, int* out_
     }
 #else
     PresentationLayout layout{};
-    if (!b->expanded_view && !b->resize_driven_view) {
+    if (!b->expanded_view && !b->resize_driven_view && !b->touch_policy) {
         // Mirror SDL_RenderSetLogicalSize's letterbox so touch maps exactly.
         if (SDL_GetRendererOutputSize(b->renderer, &drawable_w, &drawable_h) != 0)
             SDL_GetWindowSize(b->window, &drawable_w, &drawable_h);
@@ -1615,7 +1615,7 @@ PresentationLayout current_presentation_layout(Backend* b, int* out_w, int* out_
 #else
     // The fixed native desktop path presents through SDL's logical size,
     // which always centres; only explicit-destination paths can anchor.
-    const bool explicit_destination = b->expanded_view || b->resize_driven_view;
+    const bool explicit_destination = b->expanded_view || b->resize_driven_view || b->touch_policy;
 #endif
     if (explicit_destination && b->anchor_top && drawable_h > drawable_w &&
         layout.height > 0 && layout.height < drawable_h) {
@@ -1945,7 +1945,7 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
     SDL_RenderSetLogicalSize(b->renderer, 0, 0);
     SDL_SetRenderDrawColor(b->renderer, 0, 0, 0, 255);
 #else
-    if (b->expanded_view || b->resize_driven_view) {
+    if (b->expanded_view || b->resize_driven_view || b->touch_policy) {
         // The destination viewport is computed explicitly in present() so
         // resizing maximally fills the drawable at the selected widescreen
         // aspect. Exact multiples retain integer scale; filtering follows the
@@ -2431,7 +2431,7 @@ bool HostWindow::set_surface_size(int base_w, int base_h) {
     // A live Display choice can cross between SDL's native logical viewport
     // and the explicit wide destination. Reset both coordinate systems, or
     // Native -> 16:9 draws drawable coordinates through the old 240x160 scale.
-    const bool explicit_view = b->expanded_view || b->resize_driven_view;
+    const bool explicit_view = b->expanded_view || b->resize_driven_view || b->touch_policy;
     SDL_RenderSetLogicalSize(b->renderer, explicit_view ? 0 : base_w, explicit_view ? 0 : base_h);
     if (explicit_view) SDL_RenderSetViewport(b->renderer, nullptr);
     SDL_SetWindowResizable(b->window,
@@ -2682,7 +2682,7 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
             SDL_RenderCopy(b->renderer, b->scanline_texture, nullptr, &destination);
     }
 #else
-    if (!b->expanded_view && !b->resize_driven_view) {
+    if (!b->expanded_view && !b->resize_driven_view && !b->touch_policy) {
         SDL_RenderCopy(b->renderer, b->texture, nullptr, nullptr);
     } else {
         if (layout.width > 0 && layout.height > 0) {
@@ -2961,7 +2961,7 @@ void HostWindow::set_resize_driven_view(bool enabled) {
     auto* b = static_cast<Backend*>(impl_);
     b->resize_driven_view = enabled;
 #if !defined(__ANDROID__)
-    const bool explicit_view = b->expanded_view || enabled;
+    const bool explicit_view = b->expanded_view || enabled || b->touch_policy;
     SDL_RenderSetLogicalSize(b->renderer, explicit_view ? 0 : b->base_w, explicit_view ? 0 : b->base_h);
     if (explicit_view) SDL_RenderSetViewport(b->renderer, nullptr);
 #endif
@@ -2983,6 +2983,12 @@ void HostWindow::configure_touch(bool policy, std::uint32_t claims,
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
     b->touch_policy = policy;
+#if !defined(__ANDROID__)
+    // SDL's logical renderer also rewrites/clamps FINGER coordinates. A game
+    // policy owns drawable -> guest mapping, so use the same explicit viewport
+    // as Android; otherwise letterboxing is applied twice (notably portrait).
+    set_resize_driven_view(b->resize_driven_view);
+#endif
     b->touch_claims = claims;
     b->touch_emulation = emulate_touch;
     if (emulate_touch) {
