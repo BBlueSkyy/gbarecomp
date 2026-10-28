@@ -253,6 +253,9 @@ struct Args {
 // menu exists to replace.
 #define GBARECOMP_UI_KEY_STATE_SLOT "system.state_slot"
 #define GBARECOMP_UI_KEY_FPS        "display.fps_readout"
+#define GBARECOMP_UI_KEY_PAD_SCALE  "controls.pad_scale"
+#define GBARECOMP_UI_KEY_SCANLINES  "display.scanlines"
+#define GBARECOMP_UI_KEY_COLOR      "display.color_profile"
 #define GBARECOMP_UI_KEY_ASSIST_ENABLED "assist.enabled"
 #define GBARECOMP_UI_KEY_FAST_FORWARD   "assist.fast_forward"
 #define GBARECOMP_UI_KEY_FAST_FORWARD_SPEED "assist.fast_forward_speed"
@@ -298,6 +301,9 @@ int runtime_ui_get(void* opaque, const RecompRuntimeUiItem* item, int* out) {
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_VOLUME) == 0) *out = c->window->volume();
     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_STATE_SLOT) == 0) *out = c->state_slot;
     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_FPS) == 0) *out = c->window->fps_readout();
+    else if (std::strcmp(item->key, GBARECOMP_UI_KEY_PAD_SCALE) == 0) *out = c->window->touch_pad_scale();
+    else if (std::strcmp(item->key, GBARECOMP_UI_KEY_SCANLINES) == 0) *out = c->window->scanline_effect();
+    else if (std::strcmp(item->key, GBARECOMP_UI_KEY_COLOR) == 0) *out = c->window->color_profile();
     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_AUDIO_ENHANCED) == 0 && c->audio)
         *out = c->audio->shadow_enabled();
     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_ASSIST_ENABLED) == 0)
@@ -338,6 +344,12 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
         c->state_slot = std::clamp(value, 1, c->state_slot_count);
     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_FPS) == 0)
         c->window->set_fps_readout(value != 0);
+    else if (std::strcmp(item->key, GBARECOMP_UI_KEY_PAD_SCALE) == 0)
+        c->window->set_touch_pad_scale(value);
+    else if (std::strcmp(item->key, GBARECOMP_UI_KEY_SCANLINES) == 0)
+        c->window->set_scanline_effect(value);
+    else if (std::strcmp(item->key, GBARECOMP_UI_KEY_COLOR) == 0)
+        c->window->set_color_profile(value);
     else if (std::strcmp(item->key, GBARECOMP_UI_KEY_AUDIO_ENHANCED) == 0 && c->audio) {
         c->audio->set_shadow_enabled(value != 0);
         c->window->save_audio_enhanced(value != 0);
@@ -1919,7 +1931,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         bus.audio().shadow_hook_pcs(g_runtime_observed_pcs,
                                     RUNTIME_MAX_OBSERVED_PCS));
     g_runtime_dispatch_observer = g_runtime_observed_pc_count
-        ? [](uint32_t pc, int thumb) {
+        ? +[](uint32_t pc, int thumb) {
               if (gba::GbaBus* b = gbarecomp::active_bus())
                   b->audio().shadow_driver_tick(pc, thumb != 0);
           }
@@ -3190,6 +3202,13 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             win.configure_touch(opts.input_frame != nullptr,
                                 opts.touch_gesture_claims,
                                 opts.touch_pad_default, args.touch_emulation);
+#if defined(__ANDROID__)
+            if (opts.mobile_action_hud)
+                win.configure_mobile_action_hud(
+                    true, opts.mobile_special_meter_probe);
+            if (opts.mobile_menu_frame_probe)
+                win.set_mobile_menu_frame_probe(opts.mobile_menu_frame_probe);
+#endif
             win.set_touch_config_dir(exe_dir.c_str());
             // The player's menu choice wins over [audio].shadow;
             // GBARECOMP_AUDIO_SHADOW still overrides both.
@@ -3453,6 +3472,40 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         fps_item.description = "Presents-per-second in the window title bar.";
         fps_item.type        = RECOMP_RUNTIME_UI_BOOL;
         runtime_ui_extras.push_back(fps_item);
+#if defined(__ANDROID__)
+        // Android-only, optional visuals and physical-size touch controls.
+        // All values persist in config.ini and affect only host presentation.
+        static const char* const color_choices[] = {
+            "Original (Raw)", "Backlit GBA", "Classic", "Frontlit GBA", "Unlit GBA"
+        };
+        static const char* const scanline_choices[] = {
+            "Off", "Subtle", "Strong"
+        };
+        const RecompRuntimeUiItem color_item{
+            GBARECOMP_UI_KEY_COLOR, "Display", "GBA color profile",
+            "Fast present-time color correction; raw is the default.",
+            RECOMP_RUNTIME_UI_CHOICE, 0, 4, 1,
+            color_choices, sizeof(color_choices) / sizeof(*color_choices), nullptr
+        };
+        runtime_ui_extras.push_back(color_item);
+        const RecompRuntimeUiItem scan_item{
+            GBARECOMP_UI_KEY_SCANLINES, "Display", "Scanline effect",
+            "Lightweight GPU overlay. Disable for maximum FPS.",
+            RECOMP_RUNTIME_UI_CHOICE, 0, 2, 1,
+            scanline_choices, sizeof(scanline_choices) / sizeof(*scanline_choices), nullptr
+        };
+        runtime_ui_extras.push_back(scan_item);
+        RecompRuntimeUiItem pad_scale_item{};
+        pad_scale_item.key = GBARECOMP_UI_KEY_PAD_SCALE;
+        pad_scale_item.section = "Controls";
+        pad_scale_item.label = "Touch controls size";
+        pad_scale_item.description = "Size of the virtual pad and its touch hitboxes (80-120%).";
+        pad_scale_item.type = RECOMP_RUNTIME_UI_INT;
+        pad_scale_item.minimum = 80;
+        pad_scale_item.maximum = 120;
+        pad_scale_item.step = 20;
+        runtime_ui_extras.push_back(pad_scale_item);
+#endif
 
         if (opts.ui_extra_items && opts.ui_extra_item_count) {
             const auto* game_items =

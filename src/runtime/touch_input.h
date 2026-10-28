@@ -29,6 +29,9 @@ namespace gbarecomp {
 enum class TouchPhase : std::uint8_t { Down = 0, Move = 1, Up = 2, Cancel = 3 };
 enum class TouchSource : std::uint8_t { Finger = 0, Mouse = 1, Tcp = 2 };
 
+// Title-owned HUD commands are delivered as edges, never platform Back.
+enum class TouchControl : std::uint8_t { None = 0, Start = 1, Back = 2 };
+
 struct TouchEvent {
     std::uint64_t seq = 0;          // assigned by TouchHub, monotonic
     std::uint32_t t_ms = 0;         // host (or scripted) milliseconds
@@ -39,6 +42,7 @@ struct TouchEvent {
     float drawable_x = 0.0f, drawable_y = 0.0f;
     float view_x = 0.0f, view_y = 0.0f;
     bool  in_view = false;          // inside the presented logical image
+    TouchControl control = TouchControl::None; // optional host HUD owner
 };
 
 enum class GestureKind : std::uint8_t {

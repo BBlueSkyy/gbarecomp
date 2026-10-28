@@ -1145,6 +1145,10 @@ add_test(NAME presentation_layout_tests COMMAND presentation_layout_tests)
 
 # Touch input: gesture recognizer, hub rings/scripts, key synthesis, JSON.
 add_gbarecomp_runtime_stack_test(touch_input_tests tests/touch_input/test_main.cpp)
+if(GBARECOMP_SDL2_OK AND NOT ANDROID AND NOT EMSCRIPTEN)
+    add_gbarecomp_runtime_stack_test(host_touch_coordinates_tests tests/touch_input/host_coordinates_test.cpp)
+    target_include_directories(host_touch_coordinates_tests PRIVATE ${SDL2_INCLUDE_DIRS})
+endif()
 add_gbarecomp_runtime_stack_test(multiplayer_session_tests tests/link/session_test.cpp)
 add_gbarecomp_runtime_stack_test(wireless_tests tests/link/wireless_test.cpp)
 add_subdirectory(tests/link)

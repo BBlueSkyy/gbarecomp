@@ -19,6 +19,7 @@
 
 #include "color_lut.h"
 #include "host_overlay.h"
+#include "mobile_touch_skin.h"
 #include "presentation_layout.h"
 #include "touch_input.h"
 #if defined(GBARECOMP_RUNTIME_UI)
@@ -370,12 +371,26 @@ struct Backend {
         float start_x = 0.0f, start_y = 0.0f;
         float grab_dx = 0.0f, grab_dy = 0.0f;  // toggle centre - finger
         bool routed = false;
+        TouchControl control = TouchControl::None;
     };
     std::array<TouchPoint, 10> touches{};
     // Virtual gamepad capability (Android by default; desktop via
     // GBARECOMP_TOUCH_CONTROLS) and its player-controlled visibility.
     bool touch_controls = false;
     bool pad_visible = false;
+    bool mobile_action_hud = false;
+    HostWindow::SpecialMeterProbe special_meter_probe = nullptr;
+    HostWindow::MobileMenuFrameProbe mobile_menu_frame_probe = nullptr;
+    bool special_ready = false;
+    unsigned special_ready_streak = 0;
+    unsigned special_not_ready_streak = 0;
+    int pad_scale_percent = 100; // controls and hitboxes scale together
+    bool pad_scale_saved = false;
+    int scanline_effect = 0;     // off / subtle / strong
+    int color_profile = 0;       // raw / backlit / classic / frontlit / unlit
+    bool display_preset_saved = false;
+    SDL_Texture* scanline_texture = nullptr;
+    int scanline_texture_height = 0;
     bool pad_choice_saved = false;
     // Player-placed pad toggle: centre as a fraction of the safe area, so it
     // keeps its place across rotation. Unset = bottom-right corner.
@@ -630,7 +645,7 @@ struct PadCircle { float x = 0, y = 0, r = 0; };
 struct PadRect {
     float x = 0, y = 0, w = 0, h = 0;
     bool contains(float px, float py, float pad = 0.0f) const {
-        return px >= x - pad && py >= y - pad &&
+        return w > 0 && h > 0 && px >= x - pad && py >= y - pad &&
                px <= x + w + pad && py <= y + h + pad;
     }
 };
@@ -638,7 +653,8 @@ struct PadLayout {
     PadCircle dpad;       // r = arm length (centre to tip)
     float dpad_thick = 0;
     PadCircle a, b;
-    PadRect l, r, select, start;
+    PadCircle pole, ki; // only used in title-specific mobile layout
+    PadRect l, r, select, start, back;
     PadRect toggle;
 };
 
@@ -668,11 +684,12 @@ PadLayout compute_pad_layout(const Backend* b) {
     // scenes), shrink to fit it rather than overlaying the image.
     constexpr float kBandNeed = 50.0f;              // mm at full size
     const float band_avail = (bottom - static_cast<float>(g.y + g.height)) / mm;
-    float s = 1.0f;
-    if (dw < dh) {
-        s = std::clamp(avail_w / need_w, 0.65f, 1.0f);
-        if (band_avail >= kBandNeed * 0.65f) s = std::min(s, band_avail / kBandNeed);
-    }
+    float s = std::clamp(static_cast<float>(b->pad_scale_percent) / 100.0f,
+                         0.8f, 1.2f);
+    // Keep both sides separated even when enlarged on a narrower display.
+    s = std::min(s, avail_w / need_w);
+    if (dw < dh && band_avail >= kBandNeed * 0.65f)
+        s = std::min(s, band_avail / kBandNeed);
     const float margin = kMargin * s * mm;
     const float arm = kArm * s * mm;
     const float button_r = kButtonR * s * mm;
@@ -724,7 +741,54 @@ PadLayout compute_pad_layout(const Backend* b) {
         const float mid = (left + right) * 0.5f;
         p.select = {mid - pill_w - 3.0f * mm, pills_y, pill_w, pill_h};
         p.start = {mid + 3.0f * mm, pills_y, pill_w, pill_h};
-    }    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
+    }
+    if (b->mobile_action_hud) {
+        // Approved reference #1: B/punch at upper right, R/Ki below,
+        // A/jump at lower right and L/Power Pole to the left of jump.
+        // Preserve the same physical four-button hit regions/multitouch
+        // mapping; only their locations change, not their GBA KEYINPUT bits.
+        const float rail = std::max(0.0f,
+            right - static_cast<float>(g.x + g.width));
+        const float rail_min = 2.0f * button_r + 2.0f * margin;
+        const float x = rail >= rail_min
+            ? right - rail * 0.5f : right - margin - button_r;
+        const float mobile_top = dw < dh
+            ? std::max(top, float(g.y + g.height)) : top;
+        const float vertical = bottom - mobile_top;
+        const float last_y = std::min(bottom - margin - button_r,
+                                      mobile_top + vertical * 0.79f);
+        // If portrait's lower band is too short, overlay the image rather
+        // than collapse B/R/A into one hit region. Respect the full safe area.
+        const float top_y = std::max(top + margin + button_r,
+            std::min(mobile_top + margin + button_r,last_y - 4.60f*button_r));
+        // Keep the vertical spacing when screen height allows it, but
+        // contain the whole stack within its safe display rectangle.
+        const float gap = std::min(2.30f * button_r,
+                                   std::max(0.0f, (last_y - top_y) * .5f));
+        const float fist_y = last_y - 2.0f * gap;
+        p.b = {x, fist_y, button_r};                  // Punch, B
+        p.ki = {x, fist_y + gap, button_r};           // Kamehameha, R
+        p.a = {x, last_y, button_r};                  // Jump, A
+        p.pole = {x - 2.55f * button_r,
+                  std::min(bottom - margin - button_r,
+                           last_y + .12f * button_r),
+                  button_r * .90f};                    // Power Pole, L
+        // Shoulder keys are the two round special buttons, never duplicates.
+        p.l = {};
+        p.r = {};
+    }
+    if (b->mobile_action_hud && b->touch_policy) {
+        // Title navigation uses its policy, including sub-VBlank short taps.
+        // SELECT has neither visual geometry nor a hit region in this HUD.
+        p.select = {};
+        const float mid = (left + right) * .5f;
+        const float w = 8.f * s * mm, h = 6.f * s * mm;
+        p.back = {mid - 9.f*s*mm - w*.5f, bottom-margin-h, w, h};
+        p.start = {mid + 9.f*s*mm - w*.5f, bottom-margin-h, w, h};
+    }
+    // Generic games retain their movable toggle; for the Dragon Ball HUD
+    // it is never drawn or hit-tested (pad_toggle_available() is false).
+    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
     float cx = right - edge - tw * 0.5f;
     float cy = bottom - edge - th * 0.5f;
     if (b->toggle_pos_saved) {
@@ -743,14 +807,15 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     const float dy = y - p.dpad.y;
     const float reach = p.dpad.r * 1.35f;
     if (std::abs(dx) <= reach && std::abs(dy) <= reach) {
+        // Two-axis input with a small common dead zone. Allow diagonals
+        // rather than snapping to whichever axis has the larger magnitude.
+        // The ratio threshold avoids jitter when dragging nearly horizontally.
         const float dead = p.dpad.r * 0.18f;
-        if (std::abs(dx) > std::abs(dy)) {
-            if (dx > dead) buttons |= 1u << 4;   // Right
-            if (dx < -dead) buttons |= 1u << 5;  // Left
-        } else {
-            if (dy < -dead) buttons |= 1u << 6;  // Up
-            if (dy > dead) buttons |= 1u << 7;   // Down
-        }
+        const float ax = std::abs(dx), ay = std::abs(dy);
+        if (ax > dead && ax >= ay * 0.45f)
+            buttons |= dx > 0 ? (1u << 4) : (1u << 5);
+        if (ay > dead && ay >= ax * 0.45f)
+            buttons |= dy > 0 ? (1u << 7) : (1u << 6);
     }
     auto in_circle = [x, y](const PadCircle& c, float scale) {
         const float ex = x - c.x, ey = y - c.y;
@@ -761,9 +826,14 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     if (in_circle(p.b, 1.3f)) buttons |= 1u << 1;
     const float pad = 2.0f * mm;
     if (p.select.contains(x, y, pad)) buttons |= 1u << 2;
-    if (p.start.contains(x, y, pad)) buttons |= 1u << 3;
-    if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
-    if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    if (p.back.w == 0 && p.start.contains(x, y, pad)) buttons |= 1u << 3;
+    if (p.ki.r > 0.0f) {
+        if (in_circle(p.ki, 1.08f)) buttons |= 1u << 8;
+        if (in_circle(p.pole, 1.08f)) buttons |= 1u << 9;
+    } else {
+        if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
+        if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    }
     return buttons;
 }
 
@@ -772,9 +842,11 @@ bool touch_input_enabled(const Backend* b) {
 }
 
 bool pad_toggle_available(const Backend* b) {
-    // The toggle is offered only when something other than the pad can drive
-    // the game; a pad-only title must never be left without controls.
-    return b && b->touch_policy && (b->touch_controls || b->touch_emulation);
+    // Dragon Ball has no show/hide button or edge tab: do not draw one or
+    // intercept taps in its previous screen area. Generic games preserve
+    // the existing movable visibility toggle.
+    return b && !b->mobile_action_hud && b->touch_policy &&
+           (b->touch_controls || b->touch_emulation);
 }
 
 Backend::TouchPoint* find_touch(Backend* b, SDL_FingerID id) {
@@ -808,6 +880,14 @@ uint16_t active_touch_buttons(const Backend* b) {
 
 void clear_touches(Backend* b) {
     if (!b) return;
+    // A short HUD tap may already have left the host finger table and be
+    // queued in the game policy. Cancel that owner on focus/lifecycle loss.
+    if (b->mobile_action_hud && b->touch_policy) {
+        TouchEvent cancel;
+        cancel.phase = TouchPhase::Cancel;
+        cancel.t_ms = touch_clock_ms();
+        TouchHub::instance().submit(cancel);
+    }
     for (auto& touch : b->touches) touch = {};
 }
 
@@ -1044,6 +1124,29 @@ void draw_touch_pad(Backend* b, HostOverlay& ov) {
     const float line = std::max(2.0f, 0.45f * mm);
     auto on = [held](int bit) { return (held & (1u << bit)) != 0; };
 
+    // The approved mobile-game skin is title-owned: glossy illustrated
+    // actions, glass D-pad, gentle blue ready rings. Keep the original input
+    // geometry and multi-finger controls unchanged for all other games.
+    if (b->mobile_action_hud && p.ki.r > 0.0f) {
+        const mobile_skin::Layout skin{
+            {p.dpad.x,p.dpad.y,p.dpad.r},
+            {p.a.x,p.a.y,p.a.r}, {p.b.x,p.b.y,p.b.r},
+            {p.ki.x,p.ki.y,p.ki.r}, {p.pole.x,p.pole.y,p.pole.r},
+            mm
+        };
+        mobile_skin::draw(ov,skin,held,b->special_ready,ov.host_ms());
+        if (b->touch_policy) {
+            bool start_down=false, back_down=false;
+            for (const auto& t : b->touches) if (t.active) {
+                start_down |= t.control == TouchControl::Start;
+                back_down |= t.control == TouchControl::Back;
+            }
+            mobile_skin::navigation(ov,p.back.x,p.back.y,p.back.w,p.back.h,false,back_down);
+            mobile_skin::navigation(ov,p.start.x,p.start.y,p.start.w,p.start.h,true,start_down);
+        }
+        return;
+    }
+
     // D-pad cross: backing + outline per arm, pressed arm highlighted.
     const float arm = p.dpad.r, t = p.dpad_thick, cx = p.dpad.x, cy = p.dpad.y;
     ov.fill_rect(cx - t * 0.5f, cy - arm, t, arm * 2.0f, t * 0.2f, backing, S);
@@ -1141,7 +1244,8 @@ void save_touch_config(const Backend* b) {
             const bool header = s != std::string::npos && line[s] == '[';
             if (header)
                 in_section = line.compare(s, 7, "[Touch]") == 0 ||
-                             line.compare(s, 7, "[Audio]") == 0;
+                             line.compare(s, 7, "[Audio]") == 0 ||
+                             line.compare(s, 14, "[VideoEffects]") == 0;
             if (in_section) continue;
             kept.push_back(line);
         }
@@ -1154,6 +1258,8 @@ void save_touch_config(const Backend* b) {
     f << "[Touch]\n";
     if (b->pad_choice_saved)
         f << "pad_visible = " << (b->pad_visible ? 1 : 0) << "\n";
+    if (b->pad_scale_saved)
+        f << "pad_scale = " << b->pad_scale_percent << "\n";
     if (b->toggle_pos_saved) {
         f << "toggle_x = " << b->toggle_fx << "\n";
         f << "toggle_y = " << b->toggle_fy << "\n";
@@ -1161,6 +1267,11 @@ void save_touch_config(const Backend* b) {
     if (b->audio_enhanced_saved) {
         f << "\n[Audio]\n";
         f << "enhanced = " << (b->audio_enhanced ? 1 : 0) << "\n";
+    }
+    if (b->display_preset_saved) {
+        f << "\n[VideoEffects]\n";
+        f << "color_profile = " << b->color_profile << "\n";
+        f << "scanlines = " << b->scanline_effect << "\n";
     }
 }
 
@@ -1479,7 +1590,7 @@ PresentationLayout current_presentation_layout(Backend* b, int* out_w, int* out_
     }
 #else
     PresentationLayout layout{};
-    if (!b->expanded_view && !b->resize_driven_view) {
+    if (!b->expanded_view && !b->resize_driven_view && !b->touch_policy) {
         // Mirror SDL_RenderSetLogicalSize's letterbox so touch maps exactly.
         if (SDL_GetRendererOutputSize(b->renderer, &drawable_w, &drawable_h) != 0)
             SDL_GetWindowSize(b->window, &drawable_w, &drawable_h);
@@ -1522,7 +1633,7 @@ PresentationLayout current_presentation_layout(Backend* b, int* out_w, int* out_
 #else
     // The fixed native desktop path presents through SDL's logical size,
     // which always centres; only explicit-destination paths can anchor.
-    const bool explicit_destination = b->expanded_view || b->resize_driven_view;
+    const bool explicit_destination = b->expanded_view || b->resize_driven_view || b->touch_policy;
 #endif
     if (explicit_destination && b->anchor_top && drawable_h > drawable_w &&
         layout.height > 0 && layout.height < drawable_h) {
@@ -1852,7 +1963,7 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
     SDL_RenderSetLogicalSize(b->renderer, 0, 0);
     SDL_SetRenderDrawColor(b->renderer, 0, 0, 0, 255);
 #else
-    if (b->expanded_view || b->resize_driven_view) {
+    if (b->expanded_view || b->resize_driven_view || b->touch_policy) {
         // The destination viewport is computed explicitly in present() so
         // resizing maximally fills the drawable at the selected widescreen
         // aspect. Exact multiples retain integer scale; filtering follows the
@@ -1965,7 +2076,15 @@ bool HostWindow::open(int scale, int base_w, int base_h, const char* title,
         }
     }
 
-    b->color_lut = std::make_unique<runtime::ColorLut>(resolve_color_settings(screen));
+    const auto initial_screen = resolve_color_settings(screen);
+    switch (initial_screen.screen) {
+        case runtime::ScreenKind::Backlit:  b->color_profile = 1; break;
+        case runtime::ScreenKind::Classic:  b->color_profile = 2; break;
+        case runtime::ScreenKind::Frontlit: b->color_profile = 3; break;
+        case runtime::ScreenKind::Unlit:    b->color_profile = 4; break;
+        default: b->color_profile = 0; break;
+    }
+    b->color_lut = std::make_unique<runtime::ColorLut>(initial_screen);
     if (!b->color_lut->is_passthrough())
         b->graded_fb.resize(static_cast<std::size_t>(base_w) * base_h * 3);
 
@@ -2282,6 +2401,7 @@ void HostWindow::close() {
     runtime_imgui_shutdown(b);
 #endif
     destroy_sharp_texture(b);
+    if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
     if (b->texture)   SDL_DestroyTexture(b->texture);
     if (b->renderer)  SDL_DestroyRenderer(b->renderer);
     if (b->window)    SDL_DestroyWindow(b->window);
@@ -2329,7 +2449,7 @@ bool HostWindow::set_surface_size(int base_w, int base_h) {
     // A live Display choice can cross between SDL's native logical viewport
     // and the explicit wide destination. Reset both coordinate systems, or
     // Native -> 16:9 draws drawable coordinates through the old 240x160 scale.
-    const bool explicit_view = b->expanded_view || b->resize_driven_view;
+    const bool explicit_view = b->expanded_view || b->resize_driven_view || b->touch_policy;
     SDL_RenderSetLogicalSize(b->renderer, explicit_view ? 0 : base_w, explicit_view ? 0 : base_h);
     if (explicit_view) SDL_RenderSetViewport(b->renderer, nullptr);
     SDL_SetWindowResizable(b->window,
@@ -2368,6 +2488,24 @@ bool HostWindow::drawable_size(int* width, int* height) const {
     if (*width > 0 && *height > 0) return true;
     return SDL_GetRendererOutputSize(b->renderer, width, height) == 0 &&
            *width > 0 && *height > 0;
+}
+
+void HostWindow::configure_mobile_action_hud(
+        bool enable, SpecialMeterProbe probe) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    b->mobile_action_hud = enable;
+    // No show/hide UI for this title. Always make the four action buttons
+    // and D-pad available even if an older APK stored pad_visible=0.
+    if (enable && b->touch_controls) b->pad_visible = true;
+    b->special_meter_probe = enable ? probe : nullptr;
+    b->special_ready = false;
+    b->special_ready_streak = b->special_not_ready_streak = 0;
+}
+
+void HostWindow::set_mobile_menu_frame_probe(MobileMenuFrameProbe probe) {
+    if (!open_ || !impl_) return;
+    static_cast<Backend*>(impl_)->mobile_menu_frame_probe = probe;
 }
 
 void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
@@ -2425,6 +2563,31 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
         rgb888 = b->presentation_upload.data();
     }
     note_present_for_health(b);
+    // The game's classifier sees the native RGB888 presentation only. It
+    // never edits emulated memory or synthesizes input on the render path.
+    if (b->mobile_menu_frame_probe)
+        b->mobile_menu_frame_probe(rgb888, static_cast<unsigned>(texture_w),
+                                   static_cast<unsigned>(texture_h));
+    if (b->mobile_action_hud && b->special_meter_probe) {
+        // Read the raw visible guest HUD only. No writes, no CPU cycle changes,
+        // and never sample color-graded or filter-generated host pixels.
+        const float fraction = b->special_meter_probe(
+            rgb888, static_cast<unsigned>(texture_w),
+            static_cast<unsigned>(texture_h));
+        if (fraction < 0.0f) {
+            b->special_ready = false;
+            b->special_ready_streak = b->special_not_ready_streak = 0;
+        } else if (fraction >= 0.96f) {
+            b->special_not_ready_streak = 0;
+            b->special_ready_streak = std::min(4u, b->special_ready_streak + 1u);
+            if (b->special_ready_streak >= 3u) b->special_ready = true;
+        } else if (fraction < 0.94f) {
+            b->special_ready_streak = 0;
+            b->special_not_ready_streak =
+                std::min(4u, b->special_not_ready_streak + 1u);
+            if (b->special_not_ready_streak >= 3u) b->special_ready = false;
+        }
+    }
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
     if (b->color_lut && !b->color_lut->is_passthrough()) {
@@ -2509,8 +2672,35 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
 #if defined(__ANDROID__)
     const SDL_Rect destination{layout.x, layout.y, layout.width, layout.height};
     SDL_RenderCopy(b->renderer, b->texture, nullptr, &destination);
+    // Shader-like scanlines: one blended GPU draw, no CPU per-pixel pass.
+    // A 1px-wide pattern at the guest's vertical resolution is cached and
+    // stretched only over the game image (not the touch controls or rails).
+    if (b->scanline_effect && texture_h > 0) {
+        if (!b->scanline_texture ||
+            b->scanline_texture_height != texture_h) {
+            if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
+            b->scanline_texture = SDL_CreateTexture(b->renderer,
+                SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STATIC, 1, texture_h);
+            b->scanline_texture_height = b->scanline_texture ? texture_h : 0;
+            if (b->scanline_texture) {
+                const std::uint32_t alpha =
+                    b->scanline_effect == 1 ? 38u : 78u;
+                std::vector<std::uint32_t> pattern(static_cast<size_t>(texture_h));
+                for (int y = 0; y < texture_h; ++y)
+                    pattern[static_cast<size_t>(y)] = (y & 1) ? (alpha << 24) : 0u;
+                SDL_UpdateTexture(b->scanline_texture, nullptr, pattern.data(),
+                                  static_cast<int>(sizeof(std::uint32_t)));
+                SDL_SetTextureBlendMode(b->scanline_texture, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+                SDL_SetTextureScaleMode(b->scanline_texture, SDL_ScaleModeNearest);
+#endif
+            }
+        }
+        if (b->scanline_texture)
+            SDL_RenderCopy(b->renderer, b->scanline_texture, nullptr, &destination);
+    }
 #else
-    if (!b->expanded_view && !b->resize_driven_view) {
+    if (!b->expanded_view && !b->resize_driven_view && !b->touch_policy) {
         SDL_RenderCopy(b->renderer, b->texture, nullptr, nullptr);
     } else {
         if (layout.width > 0 && layout.height > 0) {
@@ -2723,6 +2913,55 @@ bool HostWindow::linear_filter() const {
     return open_ && impl_ && static_cast<const Backend*>(impl_)->linear_filter;
 }
 
+void HostWindow::set_scanline_effect(int preset) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    preset = std::clamp(preset, 0, 2);
+    if (b->scanline_effect == preset) return;
+    b->scanline_effect = preset;
+    if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
+    b->scanline_texture = nullptr;
+    b->scanline_texture_height = 0;
+    b->display_preset_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::scanline_effect() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->scanline_effect : 0;
+}
+void HostWindow::set_color_profile(int preset) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    preset = std::clamp(preset, 0, 4);
+    if (b->color_profile == preset) return;
+    runtime::ColorSettings settings{};
+    switch (preset) {
+        case 1: settings.screen = runtime::ScreenKind::Backlit; break;
+        case 2: settings.screen = runtime::ScreenKind::Classic; break;
+        case 3: settings.screen = runtime::ScreenKind::Frontlit; break;
+        case 4: settings.screen = runtime::ScreenKind::Unlit; break;
+        default: break;
+    }
+    b->color_lut = std::make_unique<runtime::ColorLut>(settings);
+    b->color_profile = preset;
+    b->display_preset_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::color_profile() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->color_profile : 0;
+}
+void HostWindow::set_touch_pad_scale(int percent) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    percent = std::clamp(percent, 80, 120);
+    if (b->pad_scale_percent == percent) return;
+    b->pad_scale_percent = percent;
+    b->pad_scale_saved = true;
+    save_touch_config(b);
+}
+int HostWindow::touch_pad_scale() const {
+    return open_ && impl_ ? static_cast<const Backend*>(impl_)->pad_scale_percent : 100;
+}
+
 void HostWindow::set_audio_enabled(bool enabled) {
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
@@ -2740,7 +2979,7 @@ void HostWindow::set_resize_driven_view(bool enabled) {
     auto* b = static_cast<Backend*>(impl_);
     b->resize_driven_view = enabled;
 #if !defined(__ANDROID__)
-    const bool explicit_view = b->expanded_view || enabled;
+    const bool explicit_view = b->expanded_view || enabled || b->touch_policy;
     SDL_RenderSetLogicalSize(b->renderer, explicit_view ? 0 : b->base_w, explicit_view ? 0 : b->base_h);
     if (explicit_view) SDL_RenderSetViewport(b->renderer, nullptr);
 #endif
@@ -2762,6 +3001,12 @@ void HostWindow::configure_touch(bool policy, std::uint32_t claims,
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
     b->touch_policy = policy;
+#if !defined(__ANDROID__)
+    // SDL's logical renderer also rewrites/clamps FINGER coordinates. A game
+    // policy owns drawable -> guest mapping, so use the same explicit viewport
+    // as Android; otherwise letterboxing is applied twice (notably portrait).
+    set_resize_driven_view(b->resize_driven_view);
+#endif
     b->touch_claims = claims;
     b->touch_emulation = emulate_touch;
     if (emulate_touch) {
@@ -2811,6 +3056,12 @@ void HostWindow::set_touch_config_dir(const char* dir) {
         if (SDL_strcasecmp(key, "pad_visible") == 0) {
             b->pad_visible = b->touch_controls && std::atoi(val) != 0;
             b->pad_choice_saved = true;
+        } else if (SDL_strcasecmp(key, "pad_scale") == 0) {
+            const int percent = std::atoi(val);
+            if (percent >= 80 && percent <= 120) {
+                b->pad_scale_percent = percent;
+                b->pad_scale_saved = true;
+            }
         } else if (SDL_strcasecmp(key, "toggle_x") == 0) {
             b->toggle_fx = std::clamp(static_cast<float>(std::atof(val)), 0.0f, 1.0f);
             b->toggle_pos_saved = true;
@@ -2819,6 +3070,9 @@ void HostWindow::set_touch_config_dir(const char* dir) {
             b->toggle_pos_saved = true;
         }
     });
+    // Config loads after configure_mobile_action_hud(); old saved hidden
+    // state must not disable the pad when no restore toggle is available.
+    if (b->mobile_action_hud && b->touch_controls) b->pad_visible = true;
     ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "Audio",
                      [b](const char* key, const char* val) {
         if (SDL_strcasecmp(key, "enhanced") == 0) {
@@ -2826,6 +3080,30 @@ void HostWindow::set_touch_config_dir(const char* dir) {
             b->audio_enhanced_saved = true;
         }
     });
+    ini_scan_section((b->touch_config_dir + "/config.ini").c_str(), "VideoEffects",
+                     [b](const char* key, const char* val) {
+        const int value = std::atoi(val);
+        if (SDL_strcasecmp(key, "color_profile") == 0 &&
+            value >= 0 && value <= 4) {
+            b->color_profile = value;
+            b->display_preset_saved = true;
+        } else if (SDL_strcasecmp(key, "scanlines") == 0 &&
+                   value >= 0 && value <= 2) {
+            b->scanline_effect = value;
+            b->display_preset_saved = true;
+        }
+    });
+    if (b->display_preset_saved) {
+        runtime::ColorSettings settings{};
+        switch (b->color_profile) {
+            case 1: settings.screen = runtime::ScreenKind::Backlit; break;
+            case 2: settings.screen = runtime::ScreenKind::Classic; break;
+            case 3: settings.screen = runtime::ScreenKind::Frontlit; break;
+            case 4: settings.screen = runtime::ScreenKind::Unlit; break;
+            default: break;
+        }
+        b->color_lut = std::make_unique<runtime::ColorLut>(settings);
+    }
 }
 
 bool HostWindow::saved_audio_enhanced(bool& enabled) const {
@@ -3054,12 +3332,13 @@ HostWindow::Events HostWindow::pump() {
             const float py = e.tfinger.y * static_cast<float>(b->last_drawable_h);
             const TouchSource source = e.tfinger.touchId == SDL_MOUSE_TOUCHID
                 ? TouchSource::Mouse : TouchSource::Finger;
-            auto route = [&](TouchPhase phase) {
+            auto route = [&](TouchPhase phase, TouchControl control = TouchControl::None) {
                 TouchEvent te;
                 te.t_ms = touch_clock_ms();
                 te.pointer = static_cast<std::int32_t>(e.tfinger.fingerId & 0x7FFFFFFF);
                 te.phase = phase;
                 te.source = source;
+                te.control = control;
                 te.drawable_x = px;
                 te.drawable_y = py;
                 te.in_view = presentation_point_to_logical(
@@ -3082,6 +3361,14 @@ HostWindow::Events HostWindow::pump() {
                         touch->toggle = true;
                         touch->grab_dx = pad.toggle.x + pad.toggle.w * 0.5f - px;
                         touch->grab_dy = pad.toggle.y + pad.toggle.h * 0.5f - py;
+                    } else if (b->mobile_action_hud && b->touch_policy &&
+                               b->pad_visible && b->touch_controls &&
+                               (pad.back.contains(px,py,2.f*b->px_per_mm) ||
+                                pad.start.contains(px,py,2.f*b->px_per_mm))) {
+                        touch->routed = true;
+                        touch->control = pad.back.contains(px,py,2.f*b->px_per_mm)
+                            ? TouchControl::Back : TouchControl::Start;
+                        route(TouchPhase::Down,touch->control);
                     } else if (buttons) {
                         touch->pad = true;
                         touch->buttons = buttons;
@@ -3097,10 +3384,9 @@ HostWindow::Events HostWindow::pump() {
                     // Sliding between pad buttons follows the finger.
                     touch->buttons = pad_buttons_at(pad, px, py, b->px_per_mm);
                 } else if (touch->routed) {
-                    route(e.type == SDL_FINGERUP ? TouchPhase::Up : TouchPhase::Move);
+                    route(e.type == SDL_FINGERUP ? TouchPhase::Up : TouchPhase::Move, touch->control);
                 } else if (touch->toggle) {
-                    // Drag beyond the tap slop repositions the toggle; a tap
-                    // shows/hides the pad.
+                    // Only generic titles can reach this movable toggle.
                     const float slop = 2.5f * b->px_per_mm;
                     const float mx = px - touch->start_x, my = py - touch->start_y;
                     if (!touch->toggle_dragging && mx * mx + my * my > slop * slop)
@@ -3381,6 +3667,14 @@ int  HostWindow::volume() const { return 100; }
 int  HostWindow::window_scale() const { return 1; }
 void HostWindow::set_linear_filter(bool /*enabled*/) {}
 bool HostWindow::linear_filter() const { return false; }
+void HostWindow::set_scanline_effect(int) {}
+int HostWindow::scanline_effect() const { return 0; }
+void HostWindow::set_color_profile(int) {}
+int HostWindow::color_profile() const { return 0; }
+void HostWindow::configure_mobile_action_hud(bool, SpecialMeterProbe) {}
+void HostWindow::set_mobile_menu_frame_probe(MobileMenuFrameProbe) {}
+void HostWindow::set_touch_pad_scale(int) {}
+int HostWindow::touch_pad_scale() const { return 100; }
 bool HostWindow::saved_audio_enhanced(bool& /*enabled*/) const { return false; }
 void HostWindow::save_audio_enhanced(bool /*enabled*/) {}
 void HostWindow::set_audio_enabled(bool /*enabled*/) {}

@@ -98,6 +98,16 @@ public:
     int  window_scale() const;
     void set_linear_filter(bool enabled);
     bool linear_filter() const;
+    // Android-friendly player presets; values are persisted in config.ini.
+    // Video effects are host-only: 0 off, 1 subtle scanlines, 2 strong.
+    void set_scanline_effect(int preset);
+    int scanline_effect() const;
+    // 0 raw, 1 backlit, 2 classic, 3 frontlit, 4 unlit.
+    void set_color_profile(int preset);
+    int color_profile() const;
+    // 80 / 100 / 120 percent, visual and touch hitboxes together.
+    void set_touch_pad_scale(int percent);
+    int touch_pad_scale() const;
     // The player's enhanced-audio (MP2K shadow) choice, remembered in
     // config.ini [Audio] next to [Touch]. saved_audio_enhanced() returns
     // false until the player has chosen.
@@ -111,6 +121,17 @@ public:
     // Dear ImGui's SDL_Renderer2 backend over the existing game renderer.
     void set_runtime_ui(RecompRuntimeUi* ui);
 #endif
+    // Optional title-specific four-button touch presentation. Mapping always
+    // follows GBA A/B/L/R, including simultaneous multi-finger holds.
+    // Probe is invoked with the *raw RGB888 game framebuffer*, never with
+    // color-graded host pixels; return 0..1 or -1 when gauge is unavailable.
+    using SpecialMeterProbe = float (*)(const uint8_t*, unsigned, unsigned);
+    void configure_mobile_action_hud(bool enable, SpecialMeterProbe probe);
+    // Optional game-owned, read-only classifier for visible touch menus.
+    // Runs at present with raw RGB888 pixels, before host filters.
+    using MobileMenuFrameProbe = void (*)(const uint8_t*, unsigned, unsigned);
+    void set_mobile_menu_frame_probe(MobileMenuFrameProbe probe);
+
     // ---- touch (touch_input.h) ---------------------------------------------
     // `policy` = the game consumes touch through RunOptions::input_frame;
     // non-pad touches are then routed to the TouchHub instead of only opening
