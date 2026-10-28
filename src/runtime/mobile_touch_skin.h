@@ -91,11 +91,15 @@ inline void staff_icon(HostOverlay& o, Circle b) {
     // Goku's actual overhead staff pose, traced from the supplied GBA frame.
     mobile_sprite::draw(o,mobile_sprite::pole,b.x,b.y,b.r,
                         {232,232,232,246},{160,160,160,237});
+    mobile_sprite::draw(o,mobile_sprite::pole_dark,b.x,b.y,b.r,
+                        {56,56,56,249},{49,49,49,246});
 }
 inline void jump_icon(HostOverlay& o, Circle b) {
     // Airborne Goku from the user-supplied frame, grayscale not a glyph.
     mobile_sprite::draw(o,mobile_sprite::jump,b.x,b.y,b.r,
                         {236,236,236,246},{163,163,163,240});
+    mobile_sprite::draw(o,mobile_sprite::jump_dark,b.x,b.y,b.r,
+                        {49,49,49,250},{57,57,57,246});
 }
 
 // Four independent round keys as in the approved compact reference.
