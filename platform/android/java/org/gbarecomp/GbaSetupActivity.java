@@ -243,6 +243,15 @@ public class GbaSetupActivity extends Activity {
         footer.addView(skipLauncherCheck, vertical
             ? margins(-2, -2, 0, 0, 0, dp(8)) : weightedMargins(1, 0, 0, dp(18), 0));
 
+        if (config.hdDemo) {
+            Button demoButton = actionButton("HD ART DEMO (15s)");
+            demoButton.setOnClickListener(view -> {
+                Intent intent = new Intent(this, gameActivityClass());
+                intent.putExtra("org.gbarecomp.extra.HD_DEMO", true);
+                startActivity(intent);
+            });
+            footer.addView(demoButton, margins(vertical ? -1 : dp(220), dp(48), 0, 0, dp(8), dp(8)));
+        }
         playButton = actionButton("PLAY");
         playButton.setTextSize(18);
         playButton.setTypeface(Typeface.DEFAULT_BOLD);

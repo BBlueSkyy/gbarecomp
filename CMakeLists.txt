@@ -297,6 +297,7 @@ add_library(gbarecomp_gba STATIC
     src/gba/gba_timers.cpp
     src/gba/gba_ppu.cpp
     src/gba/gba_high_resolution.cpp
+    src/gba/gba_texture_replacement.cpp
     src/gba/gba_audio.cpp
     src/gba/mod_audio.cpp
     src/gba/gba_m4a.cpp
@@ -389,6 +390,7 @@ add_library(gbarecomp_runtime STATIC
     src/runtime/multiplayer_session.cpp
     src/runtime/multiplayer_slice.cpp
     src/runtime/runtime.cpp
+    src/runtime/hd_texture_loader.cpp
     src/runtime/diagnostic_replay.cpp
     src/runtime/save_config.cpp
     src/runtime/bios_hle.cpp
@@ -528,7 +530,7 @@ target_compile_definitions(gbarecomp_runtime PRIVATE
     GBARECOMP_SELFHEAL_RECOMPILE_DEFAULT=$<BOOL:${GBARECOMP_SELFHEAL_RECOMPILE_DEFAULT}>)
 target_link_libraries(gbarecomp_runtime PUBLIC
     gbarecomp_gba gbarecomp_debug gbarecomp_recompile_core
-    gbarecomp_heal_gate)
+    gbarecomp_heal_gate ${CMAKE_DL_LIBS})
 set_property(TARGET gbarecomp_runtime PROPERTY POSITION_INDEPENDENT_CODE ON)
 if(GBARECOMP_SDL2_OK)
     target_compile_definitions(gbarecomp_runtime PUBLIC GBARECOMP_HAVE_SDL2)
@@ -1283,3 +1285,15 @@ configure_file(
     ${CMAKE_CURRENT_BINARY_DIR}/runtime.cmake
     @ONLY
 )
+
+# HD pack checks are ROM-free and exercise real decoders/compositor.
+add_executable(hd_pack_tests tests/texture_replacement/pack_test.cpp)
+target_link_libraries(hd_pack_tests PRIVATE gbarecomp_gba)
+add_test(NAME hd_pack_tests COMMAND hd_pack_tests)
+add_executable(hd_compositor_tests tests/texture_replacement/compositor_test.cpp)
+target_link_libraries(hd_compositor_tests PRIVATE gbarecomp_gba)
+add_test(NAME hd_compositor_tests COMMAND hd_compositor_tests)
+add_gbarecomp_runtime_stack_test(hd_ppu_tests tests/texture_replacement/ppu_test.cpp)
+
+add_gbarecomp_runtime_stack_test(hd_loader_tests tests/texture_replacement/loader_test.cpp)
+target_compile_definitions(hd_loader_tests PRIVATE HD_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/texture_replacement/fixtures")

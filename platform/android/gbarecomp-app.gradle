@@ -112,6 +112,7 @@ android {
             gbaActivityOrientation: activityOrientation,
             gbaPayloadVersion: "${g.payloadVersion ?: '1'}",
             gbaSetupNote: g.setupNote ?: "",
+            gbaHdDemo: "${g.hdDemo ?: false}",
             gbaGyro: "${g.gyro ?: false}",
         ]
 

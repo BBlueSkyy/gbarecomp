@@ -1512,8 +1512,8 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
         top[x].valid = true;
     }
     auto submit = [&](uint32_t x, uint16_t color, int key, uint8_t layer,
-                      bool target1, bool target2) {
-        if (hd) hd->submit(x, color, key, layer, target1, target2);
+                      bool target1, bool target2, HdTileSample replacement = {}) {
+        if (hd) hd->submit(x, color, key, layer, target1, target2, replacement);
         PixelCandidate cand;
         cand.color = color;
 #if !defined(GBARECOMP_SCANLINE_HLE)
@@ -1648,7 +1648,10 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
                    static_cast<int>(bg_priority * 256u + 128u + layer),
                    static_cast<uint8_t>(layer),
                    sample_blend && ((first_targets & (1u << layer)) != 0),
-                   (second_targets & (1u << layer)) != 0);
+                   (second_targets & (1u << layer)) != 0,
+                   hd ? hd->tile_sample(vram + char_base + tile_num * (color256 ? 64u : 32u),
+                       pal + (color256 ? 0u : palette_bank * 32u), color256, false,
+                       px, py, hflip, vflip) : HdTileSample{});
         }
     };
     auto render_affine_bg = [&](uint32_t layer, uint32_t cnt_off,
@@ -1976,7 +1979,10 @@ void render_scanline_wide(uint8_t* rgb, int y, uint16_t dispcnt,
                 const uint16_t color = load_u16_le(&obj_pal[pal_index * 2]);
                 uint32_t ux = static_cast<uint32_t>(screen_x);
                 bool t1 = (blend_enabled(ux) || authored_margin) && obj_mode == 1;
-                submit(ux, color, key, 4, t1, obj_target2);
+                submit(ux, color, key, 4, t1, obj_target2,
+                    hd && !rot_scale && tile_off + (color256 ? 64u : 32u) <= 96u*1024u ? hd->tile_sample(vram + tile_off,
+                        obj_pal + (color256 ? 0u : palette_bank * 32u), color256, true,
+                        px_in_tile, py_in_tile, (attr1 & 0x1000u)!=0, (attr1 & 0x2000u)!=0) : HdTileSample{});
             };
             if (rot_scale) {
                 int bw = disable_or_double ? sw * 2 : sw;
@@ -2535,6 +2541,7 @@ void GbaPpu::set_internal_resolution(unsigned scale, HighResolutionAffineProvide
     else {
         high_resolution_ = std::make_unique<GbaHighResolutionFrame>(scale);
         high_resolution_->configure(render_width(), render_height());
+        high_resolution_->set_replacements(replacements_);
     }
 }
 } // namespace gba

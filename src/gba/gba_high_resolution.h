@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gba_texture_replacement.h"
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -27,7 +28,9 @@ public:
                     HighResolutionAffineProvider provider, bool filter);
     void window(unsigned x, uint8_t control);
     void submit(unsigned x, uint16_t color, int key, uint8_t layer,
-                bool target1, bool target2);
+                bool target1, bool target2, HdTileSample replacement = {});
+    void set_replacements(TextureReplacementPack* pack) { replacements_ = pack; }
+    HdTileSample tile_sample(const uint8_t* tile, const uint8_t* palette, bool bpp8, bool obj, unsigned x, unsigned y, bool flip_x=false, bool flip_y=false);
     void black_column(unsigned x) { black_[x] = true; }
     void resolve();
     void upscale_line(unsigned y, const uint8_t* native_row);
@@ -46,6 +49,7 @@ private:
         int key = 0x7fffffff;
         uint8_t layer = 5;
         bool target1 = false, target2 = false, valid = false;
+        HdTileSample replacement{};
     };
     struct Affine {
         bool active = false;
@@ -65,7 +69,8 @@ private:
     };
     static void insert(Pixel& top, Pixel& second, const Pixel& candidate);
     bool sample(const Affine& bg, int64_t u, int64_t v, uint16_t& color) const;
-    void write_color(uint8_t* dst, const Pixel& top, const Pixel& second) const;
+    void write_color(uint8_t* dst, Pixel top, Pixel second, unsigned sx, unsigned sy) const;
+    TextureReplacementPack* replacements_ = nullptr;
     void wrote_line(unsigned y);
     unsigned scale_, width_ = 0, height_ = 0, ox_ = 0, row_ = 0;
     uint16_t bldcnt_ = 0, alpha_ = 0;
