@@ -121,6 +121,13 @@ public:
     // Dear ImGui's SDL_Renderer2 backend over the existing game renderer.
     void set_runtime_ui(RecompRuntimeUi* ui);
 #endif
+    // Optional title-specific four-button touch presentation. Mapping always
+    // follows GBA A/B/L/R, including simultaneous multi-finger holds.
+    // Probe is invoked with the *raw RGB888 game framebuffer*, never with
+    // color-graded host pixels; return 0..1 or -1 when gauge is unavailable.
+    using SpecialMeterProbe = float (*)(const uint8_t*, unsigned, unsigned);
+    void configure_mobile_action_hud(bool enable, SpecialMeterProbe probe);
+
     // ---- touch (touch_input.h) ---------------------------------------------
     // `policy` = the game consumes touch through RunOptions::input_frame;
     // non-pad touches are then routed to the TouchHub instead of only opening

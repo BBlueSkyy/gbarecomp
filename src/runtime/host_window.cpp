@@ -19,6 +19,7 @@
 
 #include "color_lut.h"
 #include "host_overlay.h"
+#include "mobile_touch_skin.h"
 #include "presentation_layout.h"
 #include "touch_input.h"
 #if defined(GBARECOMP_RUNTIME_UI)
@@ -376,6 +377,11 @@ struct Backend {
     // GBARECOMP_TOUCH_CONTROLS) and its player-controlled visibility.
     bool touch_controls = false;
     bool pad_visible = false;
+    bool mobile_action_hud = false;
+    HostWindow::SpecialMeterProbe special_meter_probe = nullptr;
+    bool special_ready = false;
+    unsigned special_ready_streak = 0;
+    unsigned special_not_ready_streak = 0;
     int pad_scale_percent = 100; // controls and hitboxes scale together
     bool pad_scale_saved = false;
     int scanline_effect = 0;     // off / subtle / strong
@@ -645,6 +651,7 @@ struct PadLayout {
     PadCircle dpad;       // r = arm length (centre to tip)
     float dpad_thick = 0;
     PadCircle a, b;
+    PadCircle pole, ki; // only used in title-specific mobile layout
     PadRect l, r, select, start;
     PadRect toggle;
 };
@@ -732,7 +739,34 @@ PadLayout compute_pad_layout(const Backend* b) {
         const float mid = (left + right) * 0.5f;
         p.select = {mid - pill_w - 3.0f * mm, pills_y, pill_w, pill_h};
         p.start = {mid + 3.0f * mm, pills_y, pill_w, pill_h};
-    }    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
+    }
+    if (b->mobile_action_hud && dw >= dh) {
+        // Four independent physical buttons, matching the game's B/A/L/R.
+        // Side-rail preference avoids covering the gameplay when possible.
+        // Top: R (Ki). Middle: B (punch). Bottom: L (staff).
+        // A (jump) sits to the left of L, clear of the three stacked buttons.
+        const float rail = std::max(0.0f,
+            right - static_cast<float>(g.x + g.width));
+        const float rail_min = 2.0f * button_r + 2.0f * margin;
+        const float x = rail >= rail_min
+            ? right - rail * 0.5f : right - margin - button_r;
+        const float vertical = bottom - top;
+        const float min_gap = 2.3f * button_r;
+        p.ki = {x, top + std::max(margin + button_r,
+                                 vertical * 0.19f), button_r};
+        p.b = {x, top + std::max(margin + button_r + min_gap,
+                                vertical * 0.43f), button_r};
+        p.pole = {x, std::min(bottom - margin - button_r,
+                             std::max(p.b.y + min_gap,
+                                      top + vertical * 0.71f)), button_r};
+        p.a = {x - 2.55f * button_r,
+               std::min(bottom - margin - button_r,
+                        p.pole.y + button_r * 0.12f), button_r * 0.90f};
+        // Shoulder keys are the two round special buttons, never duplicates.
+        p.l = {};
+        p.r = {};
+    }
+    const float tw = 8.0f * mm, th = tw * 0.72f, edge = 3.0f * mm;
     float cx = right - edge - tw * 0.5f;
     float cy = bottom - edge - th * 0.5f;
     if (b->toggle_pos_saved) {
@@ -771,8 +805,13 @@ uint16_t pad_buttons_at(const PadLayout& p, float x, float y, float mm) {
     const float pad = 2.0f * mm;
     if (p.select.contains(x, y, pad)) buttons |= 1u << 2;
     if (p.start.contains(x, y, pad)) buttons |= 1u << 3;
-    if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
-    if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    if (p.ki.r > 0.0f) {
+        if (in_circle(p.ki, 1.08f)) buttons |= 1u << 8;
+        if (in_circle(p.pole, 1.08f)) buttons |= 1u << 9;
+    } else {
+        if (p.r.contains(x, y, pad)) buttons |= 1u << 8;
+        if (p.l.contains(x, y, pad)) buttons |= 1u << 9;
+    }
     return buttons;
 }
 
@@ -1052,6 +1091,34 @@ void draw_touch_pad(Backend* b, HostOverlay& ov) {
     const OverlayColor label{255, 255, 255, 235};
     const float line = std::max(2.0f, 0.45f * mm);
     auto on = [held](int bit) { return (held & (1u << bit)) != 0; };
+
+    // The approved mobile-game skin is title-owned: glossy illustrated
+    // actions, glass D-pad, gentle blue ready rings. Keep the original input
+    // geometry and multi-finger controls unchanged for all other games.
+    if (b->mobile_action_hud && p.ki.r > 0.0f) {
+        const mobile_skin::Layout skin{
+            {p.dpad.x,p.dpad.y,p.dpad.r},
+            {p.a.x,p.a.y,p.a.r}, {p.b.x,p.b.y,p.b.r},
+            {p.ki.x,p.ki.y,p.ki.r}, {p.pole.x,p.pole.y,p.pole.r},
+            mm
+        };
+        mobile_skin::draw(ov,skin,held,b->special_ready,ov.host_ms());
+        auto small_pill = [&](const PadRect& r,int bit,const char* txt) {
+            const bool down=on(bit);
+            ov.fill_rect(r.x,r.y,r.w,r.h,r.h*0.50f,
+                down ? OverlayColor{65,145,202,197}
+                     : OverlayColor{26,37,52,156}, S);
+            ov.stroke_rect(r.x,r.y,r.w,r.h,r.h*0.50f,
+                std::max(1.4f,mm*.20f), {204,226,245,205}, S);
+            if(ov.text_supported())
+                ov.text(r.x+r.w*.50f,r.y+r.h*.18f,
+                    std::min(r.h*.60f,mm*3.2f),
+                    {249,252,255,235},txt,OverlayAlign::Center,S);
+        };
+        small_pill(p.select,2,"SELECT");
+        small_pill(p.start,3,"START");
+        return;
+    }
 
     // D-pad cross: backing + outline per arm, pressed arm highlighted.
     const float arm = p.dpad.r, t = p.dpad_thick, cx = p.dpad.x, cy = p.dpad.y;
@@ -2396,6 +2463,16 @@ bool HostWindow::drawable_size(int* width, int* height) const {
            *width > 0 && *height > 0;
 }
 
+void HostWindow::configure_mobile_action_hud(
+        bool enable, SpecialMeterProbe probe) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    b->mobile_action_hud = enable;
+    b->special_meter_probe = enable ? probe : nullptr;
+    b->special_ready = false;
+    b->special_ready_streak = b->special_not_ready_streak = 0;
+}
+
 void HostWindow::present(const uint8_t* rgb888) { present(rgb888, 0, 0); }
 
 void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sampled_h) {
@@ -2451,6 +2528,26 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
         rgb888 = b->presentation_upload.data();
     }
     note_present_for_health(b);
+    if (b->mobile_action_hud && b->special_meter_probe) {
+        // Read the raw visible guest HUD only. No writes, no CPU cycle changes,
+        // and never sample color-graded or filter-generated host pixels.
+        const float fraction = b->special_meter_probe(
+            rgb888, static_cast<unsigned>(texture_w),
+            static_cast<unsigned>(texture_h));
+        if (fraction < 0.0f) {
+            b->special_ready = false;
+            b->special_ready_streak = b->special_not_ready_streak = 0;
+        } else if (fraction >= 0.96f) {
+            b->special_not_ready_streak = 0;
+            b->special_ready_streak = std::min(4u, b->special_ready_streak + 1u);
+            if (b->special_ready_streak >= 3u) b->special_ready = true;
+        } else if (fraction < 0.94f) {
+            b->special_ready_streak = 0;
+            b->special_not_ready_streak =
+                std::min(4u, b->special_not_ready_streak + 1u);
+            if (b->special_not_ready_streak >= 3u) b->special_ready = false;
+        }
+    }
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
     if (b->color_lut && !b->color_lut->is_passthrough()) {
@@ -3517,6 +3614,7 @@ void HostWindow::set_scanline_effect(int) {}
 int HostWindow::scanline_effect() const { return 0; }
 void HostWindow::set_color_profile(int) {}
 int HostWindow::color_profile() const { return 0; }
+void HostWindow::configure_mobile_action_hud(bool, SpecialMeterProbe) {}
 void HostWindow::set_touch_pad_scale(int) {}
 int HostWindow::touch_pad_scale() const { return 100; }
 bool HostWindow::saved_audio_enhanced(bool& /*enabled*/) const { return false; }

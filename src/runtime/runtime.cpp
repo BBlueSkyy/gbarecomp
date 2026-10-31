@@ -3194,6 +3194,11 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
             win.configure_touch(opts.input_frame != nullptr,
                                 opts.touch_gesture_claims,
                                 opts.touch_pad_default, args.touch_emulation);
+#if defined(__ANDROID__)
+            if (opts.mobile_action_hud)
+                win.configure_mobile_action_hud(
+                    true, opts.mobile_special_meter_probe);
+#endif
             win.set_touch_config_dir(exe_dir.c_str());
             // The player's menu choice wins over [audio].shadow;
             // GBARECOMP_AUDIO_SHADOW still overrides both.

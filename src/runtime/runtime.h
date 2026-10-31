@@ -179,6 +179,14 @@ struct RunOptions {
     // always does.
     std::uint32_t touch_gesture_claims = 0;
 
+    // Game-owned Android 4-action HUD: circular A/B/L/R buttons, using
+    // untouched KEYINPUT mappings. Disabled for all other titles.
+    bool mobile_action_hud = false;
+    // Read-only visible meter check, called during presentation with
+    // 240x160 RGB888 guest pixels; -1 means cannot reliably detect.
+    float (*mobile_special_meter_probe)(const std::uint8_t* rgb888,
+                                        unsigned width, unsigned height) = nullptr;
+
     // Virtual gamepad overlay default when config.ini has no saved choice:
     // -1 = platform default (on for Android, off on desktop), 0 = off, 1 = on.
     // The player toggles it with the corner button; the choice persists.
