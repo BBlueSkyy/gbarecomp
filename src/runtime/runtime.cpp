@@ -3211,10 +3211,17 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 #endif
             win.set_touch_config_dir(exe_dir.c_str());
             if (opts.hd_pack_manifest && *opts.hd_pack_manifest) {
+#if defined(__ANDROID__)
+                // Android has a stable app-private writable SDL preference dir.
+                // Let HostWindow resolve the relative game pack there, rather
+                // than trying to write into the installed read-only APK path.
+                win.set_hd_pack_manifest(opts.hd_pack_manifest);
+#else
                 const std::filesystem::path request(opts.hd_pack_manifest);
                 const auto path = request.is_absolute() ? request
                     : (std::filesystem::path(exe_dir) / request);
                 win.set_hd_pack_manifest(path.string().c_str());
+#endif
             }
             // The player's menu choice wins over [audio].shadow;
             // GBARECOMP_AUDIO_SHADOW still overrides both.
