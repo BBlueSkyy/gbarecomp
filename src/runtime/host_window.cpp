@@ -3191,6 +3191,23 @@ void HostWindow::set_view_margins(std::uint32_t left, std::uint32_t right,
     b->margin_bottom = bottom;
 }
 
+std::string HostWindow::hd_probe_output_path() const {
+#if defined(__ANDROID__)
+    if (!open_ || !impl_) return {};
+    char* pref=SDL_GetPrefPath("gbarecomp","hd-packs");
+    if (!pref) return {};
+    const std::filesystem::path base(pref);
+    SDL_free(pref);
+    const auto dir=base/"remaster";
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(dir/"capture.flag",ec))
+        return {};
+    return (dir/"obj_attribution.jsonl").string();
+#else
+    return {}; // Explicitly restricted to Android debug device captures.
+#endif
+}
+
 void HostWindow::set_hd_pack_manifest(const char* manifest) {
     if (!open_ || !impl_) return;
     auto* b = static_cast<Backend*>(impl_);
@@ -3800,6 +3817,7 @@ void HostWindow::set_view_margins(std::uint32_t, std::uint32_t, std::uint32_t,
                                   std::uint32_t) {}
 void HostWindow::set_host_overlay(void (*)(HostOverlay*)) {}
 void HostWindow::set_hd_pack_manifest(const char*) {}
+std::string HostWindow::hd_probe_output_path() const { return {}; }
 float HostWindow::px_per_mm() const { return 96.0f / 25.4f; }
 void HostWindow::set_presentation_anchor_top(bool) {}
 bool HostWindow::wait_for_foreground() { return false; }
