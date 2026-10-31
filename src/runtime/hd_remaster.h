@@ -46,6 +46,7 @@ inline bool decode_fingerprint(std::string_view s,std::uint64_t& out) {
         else return false;
         v=(v<<4)|d;
     }
+    if(v==0) return false; // reserved invalid sentinel
     out=v;return true;
 }
 inline bool parse(std::string_view contents, std::vector<Region>& result,
@@ -115,6 +116,7 @@ inline std::uint64_t fingerprint_rgb888(const std::uint8_t* rgb,
     return hash;
 }
 inline bool matches(const std::uint8_t* rgb,int w,int h,const Region& r) {
-    return fingerprint_rgb888(rgb,w,h,r)==r.fingerprint;
+    return rgb && w==240 && h==160 && r.fingerprint!=0 &&
+           fingerprint_rgb888(rgb,w,h,r)==r.fingerprint;
 }
 } // namespace gbarecomp::hd_remaster
