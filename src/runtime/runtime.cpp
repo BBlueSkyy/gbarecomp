@@ -3166,6 +3166,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         std::function<void()> stop;
         ~ObserverGuard() { if (stop) stop(); }
     } observer_guard{stop_observer};
+    // Observer must outlive window setup and the entire guest frame loop.
+    // A stack-local within if(args.window) would otherwise dangle.
+    std::unique_ptr<HdObjProbe> hd_probe;
     if (args.window) {
         if (!HostWindow::is_available()) {
             std::fprintf(stderr,
@@ -3235,7 +3238,6 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         // Read-only opt-in OBJ/BG attribution. A marker in Android app-private
         // storage is required even when this title authorizes the capability.
         // No observer, data access or IO overhead during ordinary sessions.
-        std::unique_ptr<HdObjProbe> hd_probe;
         if (opts.hd_obj_attribution_probe &&
             !ppu.presentation_observer()) {
             const std::string output = win.hd_probe_output_path();
