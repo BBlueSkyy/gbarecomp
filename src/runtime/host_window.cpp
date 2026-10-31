@@ -13,12 +13,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "color_lut.h"
 #include "host_overlay.h"
+#include "hd_remaster.h"
 #include "mobile_touch_skin.h"
 #include "presentation_layout.h"
 #include "touch_input.h"
@@ -341,10 +343,19 @@ HostWindow* g_haptic_window = nullptr;
 // Settings-menu requests from game policies (any thread; consumed by pump).
 std::atomic<bool> g_settings_menu_requested{false};
 
+// HD panels are immutable GPU textures. All fingerprint and pixel work
+// happens in presentation only, on the existing rendering thread.
+struct HdPatchTexture {
+    hd_remaster::Region region;
+    SDL_Texture* texture = nullptr;
+    bool match = false;
+};
+
 struct Backend {
     SDL_Window*   window   = nullptr;
     SDL_Renderer* renderer = nullptr;
     SDL_Texture*  texture  = nullptr;
+    std::vector<HdPatchTexture> hd_regions; // empty fast path, no new allocations per frame
     unsigned      presentation_source_w = 0, presentation_source_h = 0;
     std::vector<uint8_t> presentation_upload;
     SDL_Texture*  sharp_texture = nullptr;
@@ -2400,6 +2411,8 @@ void HostWindow::close() {
 #if defined(GBARECOMP_RUNTIME_UI)
     runtime_imgui_shutdown(b);
 #endif
+    for (auto& hd : b->hd_regions) SDL_DestroyTexture(hd.texture);
+    b->hd_regions.clear();
     destroy_sharp_texture(b);
     if (b->scanline_texture) SDL_DestroyTexture(b->scanline_texture);
     if (b->texture)   SDL_DestroyTexture(b->texture);
@@ -2588,6 +2601,10 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
             if (b->special_not_ready_streak >= 3u) b->special_ready = false;
         }
     }
+    // Read only the original PPU pixels. Host filters run after this, so
+    // changing contrast, scaling or shaders cannot create false matches.
+    for (auto& item : b->hd_regions)
+        item.match = hd_remaster::matches(rgb888,texture_w,texture_h,item.region);
     // Present-time color grading (opt-in). Raw is passthrough: the raw
     // PPU frame is uploaded untouched, so verify/frame-hash are unaffected.
     if (b->color_lut && !b->color_lut->is_passthrough()) {
@@ -2672,6 +2689,28 @@ void HostWindow::present(const uint8_t* rgb888, unsigned sampled_w, unsigned sam
 #if defined(__ANDROID__)
     const SDL_Rect destination{layout.x, layout.y, layout.width, layout.height};
     SDL_RenderCopy(b->renderer, b->texture, nullptr, &destination);
+    // Stage-1 HD presentation: place verified, fixed HUD regions at
+    // drawable resolution, over their native backing pixels. No guest writes
+    // and no texture upload while presenting. Background/world layers and
+    // moving OBJs are deliberately out of scope until they can be identified.
+    if (sampled_w==240u && sampled_h==160u &&
+        layout.width>0 && layout.height>0) {
+        for (const auto& hd : b->hd_regions) {
+            if (!hd.match) continue;
+            const auto& r=hd.region;
+            const auto map_x=[&](int x) {
+                return layout.x+int(std::lround(double(x)*layout.width/240.0));
+            };
+            const auto map_y=[&](int y) {
+                return layout.y+int(std::lround(double(y)*layout.height/160.0));
+            };
+            const int x0=map_x(r.x),x1=map_x(r.x+r.w);
+            const int y0=map_y(r.y),y1=map_y(r.y+r.h);
+            const SDL_Rect target{x0,y0,x1-x0,y1-y0};
+            if (target.w>0 && target.h>0)
+                SDL_RenderCopy(b->renderer,hd.texture,nullptr,&target);
+        }
+    }
     // Shader-like scanlines: one blended GPU draw, no CPU per-pixel pass.
     // A 1px-wide pattern at the guest's vertical resolution is cached and
     // stretched only over the game image (not the touch controls or rails).
@@ -3150,6 +3189,92 @@ void HostWindow::set_view_margins(std::uint32_t left, std::uint32_t right,
     b->margin_right = right;
     b->margin_top = top;
     b->margin_bottom = bottom;
+}
+
+std::string HostWindow::hd_probe_output_path() const {
+#if defined(__ANDROID__)
+    if (!open_ || !impl_) return {};
+    char* pref=SDL_GetPrefPath("gbarecomp","hd-packs");
+    if (!pref) return {};
+    const std::filesystem::path base(pref);
+    SDL_free(pref);
+    const auto dir=base/"remaster";
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(dir/"capture.flag",ec))
+        return {};
+    return (dir/"obj_attribution.jsonl").string();
+#else
+    return {}; // Explicitly restricted to Android debug device captures.
+#endif
+}
+
+void HostWindow::set_hd_pack_manifest(const char* manifest) {
+    if (!open_ || !impl_) return;
+    auto* b = static_cast<Backend*>(impl_);
+    // Stage 1: allow one pack per session. No hot-reloading or per-frame I/O.
+    for (auto& item : b->hd_regions) SDL_DestroyTexture(item.texture);
+    b->hd_regions.clear();
+    if (!manifest || !*manifest) return;
+    std::filesystem::path path(manifest);
+#if defined(__ANDROID__)
+    if (path.is_relative()) {
+        // Game-private writable path, not the installation's read-only APK.
+        char* pref=SDL_GetPrefPath("gbarecomp","hd-packs");
+        if (!pref) return;
+        path=std::filesystem::path(pref)/path;
+        SDL_free(pref);
+    }
+#endif
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path,ec)) {
+        std::fprintf(stderr,"hd_remaster: optional pack absent: %s\n",
+                     path.string().c_str());
+        return; // OFF, no per-frame work
+    }
+    const auto bytes=std::filesystem::file_size(path,ec);
+    if (ec || bytes>16384 || bytes==0) {
+        std::fprintf(stderr,"hd_remaster: bad manifest size\n");return;
+    }
+    std::ifstream file(path,std::ios::binary);
+    if (!file) return;
+    std::string data(static_cast<std::size_t>(bytes),'\0');
+    if (!file.read(data.data(),static_cast<std::streamsize>(bytes))) return;
+    std::vector<hd_remaster::Region> regions;
+    std::string error;
+    if (!hd_remaster::parse(data,regions,error)) {
+        std::fprintf(stderr,"hd_remaster: rejected manifest: %s\n",error.c_str());
+        return;
+    }
+    // All-or-nothing: a malformed asset must never result in a half-remaster.
+    std::vector<HdPatchTexture> staged;
+    staged.reserve(regions.size());
+    for (const auto& r : regions) {
+        auto asset=path.parent_path()/r.image;
+        ec.clear();
+        if (!std::filesystem::is_regular_file(asset,ec)) {error="missing BMP";break;}
+        const auto image_bytes=std::filesystem::file_size(asset,ec);
+        if (ec || image_bytes>16*1024*1024 || image_bytes==0) {error="bad BMP size";break;}
+        SDL_Surface* surface=SDL_LoadBMP(asset.string().c_str());
+        if (!surface) {error="BMP decode failed";break;}
+        const bool valid=surface->w>=r.w*2 && surface->h>=r.h*2 &&
+                         surface->w<=2048 && surface->h<=2048;
+        SDL_Texture* texture=valid ? SDL_CreateTextureFromSurface(b->renderer,surface) : nullptr;
+        SDL_FreeSurface(surface);
+        if (!texture) {error="HD asset must be >=2x native and <=2048px";break;}
+        SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2,0,12)
+        SDL_SetTextureScaleMode(texture,SDL_ScaleModeLinear);
+#endif
+        staged.push_back({r,texture,false});
+    }
+    if (staged.size()!=regions.size()) {
+        for (auto& item:staged) SDL_DestroyTexture(item.texture);
+        std::fprintf(stderr,"hd_remaster: pack rejected: %s\n",error.c_str());
+        return;
+    }
+    b->hd_regions=std::move(staged);
+    std::fprintf(stderr,"hd_remaster: loaded %zu validated HD panels (exact-match only)\n",
+                 b->hd_regions.size());
 }
 
 void HostWindow::set_host_overlay(void (*overlay)(HostOverlay*)) {
@@ -3691,6 +3816,8 @@ void HostWindow::set_touch_pad_visible(bool /*visible*/) {}
 void HostWindow::set_view_margins(std::uint32_t, std::uint32_t, std::uint32_t,
                                   std::uint32_t) {}
 void HostWindow::set_host_overlay(void (*)(HostOverlay*)) {}
+void HostWindow::set_hd_pack_manifest(const char*) {}
+std::string HostWindow::hd_probe_output_path() const { return {}; }
 float HostWindow::px_per_mm() const { return 96.0f / 25.4f; }
 void HostWindow::set_presentation_anchor_top(bool) {}
 bool HostWindow::wait_for_foreground() { return false; }

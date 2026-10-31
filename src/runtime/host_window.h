@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 struct RecompRuntimeUi;
 
@@ -151,6 +152,12 @@ public:
                           std::uint32_t top, std::uint32_t bottom);
     // Game-owned host overlay, drawn each present (null = none).
     void set_host_overlay(void (*overlay)(HostOverlay*));
+    // Loads validated host HD overlays once, from an opt-in local manifest.
+    // Non-existent manifest: silent disabled mode. Failed parse: no overlays.
+    void set_hd_pack_manifest(const char* path);
+    // Returns a debug JSONL output path only if the user explicitly armed
+    // capture.flag in app-private storage. Empty means no attribution work.
+    std::string hd_probe_output_path() const;
     // Physical density of the window's display (drawable px per mm).
     float px_per_mm() const;
     // Portrait presentations may anchor the image to the top edge so host

@@ -30,6 +30,7 @@
 #include "gba_bios.h"
 #include "gba_bus.h"
 #include "gba_ppu.h"
+#include "hd_obj_probe.h"
 #include "gba_rom_header.h"
 #include "host_platform.h"
 #include "host_window.h"
@@ -3165,6 +3166,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         std::function<void()> stop;
         ~ObserverGuard() { if (stop) stop(); }
     } observer_guard{stop_observer};
+    // Observer must outlive window setup and the entire guest frame loop.
+    // A stack-local within if(args.window) would otherwise dangle.
+    std::unique_ptr<HdObjProbe> hd_probe;
     if (args.window) {
         if (!HostWindow::is_available()) {
             std::fprintf(stderr,
@@ -3210,6 +3214,19 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 win.set_mobile_menu_frame_probe(opts.mobile_menu_frame_probe);
 #endif
             win.set_touch_config_dir(exe_dir.c_str());
+            if (opts.hd_pack_manifest && *opts.hd_pack_manifest) {
+#if defined(__ANDROID__)
+                // Android has a stable app-private writable SDL preference dir.
+                // Let HostWindow resolve the relative game pack there, rather
+                // than trying to write into the installed read-only APK path.
+                win.set_hd_pack_manifest(opts.hd_pack_manifest);
+#else
+                const std::filesystem::path request(opts.hd_pack_manifest);
+                const auto path = request.is_absolute() ? request
+                    : (std::filesystem::path(exe_dir) / request);
+                win.set_hd_pack_manifest(path.string().c_str());
+#endif
+            }
             // The player's menu choice wins over [audio].shadow;
             // GBARECOMP_AUDIO_SHADOW still overrides both.
             bool enhanced = false;
@@ -3218,6 +3235,18 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 bus.audio().set_shadow_enabled(enhanced);
         }
         win.set_host_overlay(opts.host_overlay);
+        // Read-only opt-in OBJ/BG attribution. A marker in Android app-private
+        // storage is required even when this title authorizes the capability.
+        // No observer, data access or IO overhead during ordinary sessions.
+        if (opts.hd_obj_attribution_probe &&
+            !ppu.presentation_observer()) {
+            const std::string output = win.hd_probe_output_path();
+            if (!output.empty()) {
+                hd_probe = std::make_unique<HdObjProbe>(output);
+                if (hd_probe->active())
+                    ppu.set_presentation_observer(hd_probe.get());
+            }
+        }
         win.set_view_margins(ppu.view_extra_left(), ppu.view_extra_right(),
                              ppu.view_extra_top(), ppu.view_extra_bottom());
         touch_window = &win;

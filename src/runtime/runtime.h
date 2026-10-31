@@ -199,6 +199,12 @@ struct RunOptions {
     // Optional host-drawn presentation layer (host_overlay.h). Called on every
     // present after the game image, before the settings menu; guest thread.
     void (*host_overlay)(HostOverlay* overlay) = nullptr;
+    // Optional game-approved host-only HD image pack. Disabled when missing;
+    // never changes PPU/OBJ state or the compiled guest. Static HUD first.
+    const char* hd_pack_manifest = nullptr;
+    // Title-approved diagnostic only; additionally requires the player's
+    // app-private remaster/capture.flag, so normal play costs nothing.
+    bool hd_obj_attribution_probe = false;
 
     // Optional game-owned debug TCP commands (JSON line in, JSON line out).
     // Return non-zero when the request was handled and `reply` was written
