@@ -46,13 +46,14 @@ inline bool decode(const std::uint8_t* oam, const std::uint8_t* vram,
     if(!affine && (a0&0x0200u)) return false; // hidden OBJ
     const int shape=(a0>>14)&3, size=(a1>>14)&3;
     const int mode=(a0>>10)&3;
-    if(shape==3 || mode==3) return false;
+    if(shape==3 || mode>=2) return false; // OBJ-window stencil is not visible artwork
     const int width=kSizes[shape][size][0],height=kSizes[shape][size][1];
     const int raw_x=a1&0x1ff,raw_y=a0&0xff;
     const bool color256=(a0&0x2000u)!=0;
-    const unsigned base=(dispcnt&7u)>=3u ? 0x14000u:0x10000u;
+    const unsigned base=0x10000u; // same native PPU OBJ address interpretation
     const bool mapping1d=(dispcnt&0x0040u)!=0;
     const unsigned tile=a2&0x3ffu;
+    if((dispcnt&7u)>=3u && tile<512u) return false; // bitmap modes reserve lower OBJ tiles
     std::uint64_t h=kFnvOffset;
     const unsigned tiles_w=static_cast<unsigned>(width/8);
     for(unsigned ty=0;ty<static_cast<unsigned>(height/8);++ty) {
