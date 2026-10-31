@@ -3198,9 +3198,22 @@ void HostWindow::set_hd_pack_manifest(const char* manifest) {
     for (auto& item : b->hd_regions) SDL_DestroyTexture(item.texture);
     b->hd_regions.clear();
     if (!manifest || !*manifest) return;
-    const std::filesystem::path path(manifest);
+    std::filesystem::path path(manifest);
+#if defined(__ANDROID__)
+    if (path.is_relative()) {
+        // Game-private writable path, not the installation's read-only APK.
+        char* pref=SDL_GetPrefPath("gbarecomp","hd-packs");
+        if (!pref) return;
+        path=std::filesystem::path(pref)/path;
+        SDL_free(pref);
+    }
+#endif
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(path,ec)) return; // absent = OFF
+    if (!std::filesystem::is_regular_file(path,ec)) {
+        std::fprintf(stderr,"hd_remaster: optional pack absent: %s\n",
+                     path.string().c_str());
+        return; // OFF, no per-frame work
+    }
     const auto bytes=std::filesystem::file_size(path,ec);
     if (ec || bytes>16384 || bytes==0) {
         std::fprintf(stderr,"hd_remaster: bad manifest size\n");return;
