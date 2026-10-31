@@ -25,6 +25,7 @@ public final class GbaGameConfig {
     public final String payloadVersion;
     public final String setupNote;
     public final boolean showGyroStatus;
+    public final boolean hdDemo;
 
     private GbaGameConfig(Bundle m) {
         title = string(m, "gbarecomp.title", "gbarecomp");
@@ -39,6 +40,7 @@ public final class GbaGameConfig {
         orientation = string(m, "gbarecomp.orientation", "landscape");
         payloadVersion = string(m, "gbarecomp.payload_version", "1");
         setupNote = string(m, "gbarecomp.setup_note", "");
+        hdDemo = Boolean.parseBoolean(string(m, "gbarecomp.hd_demo", "false"));
         showGyroStatus = Boolean.parseBoolean(string(m, "gbarecomp.gyro", "false"));
     }
 

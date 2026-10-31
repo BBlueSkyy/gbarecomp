@@ -29,8 +29,32 @@ import java.nio.charset.StandardCharsets;
  * runtime so host chrome avoids cutouts and system-gesture edges.
  */
 public class GbaGameActivity extends SDLActivity {
+    /** Decode only bounded HD tile assets, never frame/raster data. */
+    public static int[] decodeHdTile(String path) {
+        android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        android.graphics.BitmapFactory.decodeFile(path, bounds);
+        int w = bounds.outWidth, h = bounds.outHeight;
+        if (w != h || w < 16 || w > 128 || w % 8 != 0) return null;
+        android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+        options.inScaled = false;
+        options.inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888;
+        android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(path, options);
+        if (bitmap == null) return null;
+        try {
+            int[] result = new int[2 + w * h]; result[0] = w; result[1] = h;
+            bitmap.getPixels(result, 2, w, 0, 0, w, h); return result;
+        } finally { bitmap.recycle(); }
+    }
     private GbaGameConfig config;
     private boolean nativeReady;
+
+    @Override
+    protected String[] getArguments() {
+        if (config.hdDemo && getIntent().getBooleanExtra("org.gbarecomp.extra.HD_DEMO", false))
+            return new String[]{"--hd-demo"};
+        return super.getArguments();
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

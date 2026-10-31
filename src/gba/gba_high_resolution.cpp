@@ -76,14 +76,15 @@ bool GbaHighResolutionFrame::begin_line(int y, unsigned ox, unsigned oy,
     uint16_t dispcnt, const uint8_t* io, const uint8_t* vram, const uint8_t* pal,
     HighResolutionAffineProvider provider, bool filter) {
     selected_ = 0; affine_ = {};
-    if (!provider || y < 0 || y >= 160 || (dispcnt & 0x80)) {
+    const bool replacement_active = replacements_ && replacements_->enabled && (replacements_->size() || replacements_->capture);
+    if ((!provider && !replacement_active) || y < 0 || y >= 160 || (dispcnt & 0x80)) {
         previous_ = {}; return false;
     }
     const unsigned mode = dispcnt & 7;
     for (unsigned i = 0; i < 2; ++i) {
         const unsigned layer = 2 + i;
         if (!(dispcnt & (0x100u << layer)) ||
-            !(mode == 2 || (mode == 1 && layer == 2)) || !provider(layer, y)) {
+            !(mode == 2 || (mode == 1 && layer == 2)) || !provider || !provider(layer, y)) {
             previous_[i] = {}; continue;
         }
         auto& a = affine_[i];
@@ -108,7 +109,7 @@ bool GbaHighResolutionFrame::begin_line(int y, unsigned ox, unsigned oy,
         previous_[i] = a;
         selected_ |= 1u << layer;
     }
-    if (!selected_) return false;
+    if (!selected_ && !replacement_active) return false;
     ++affine_lines_;
     ox_ = ox; row_ = unsigned(y + int(oy));
     vram_ = vram; pal_ = pal; filter_ = filter;
@@ -131,9 +132,9 @@ void GbaHighResolutionFrame::insert(Pixel& top, Pixel& second, const Pixel& p) {
     else if (p.key < second.key) second = p;
 }
 void GbaHighResolutionFrame::submit(unsigned x, uint16_t color, int key,
-    uint8_t layer, bool target1, bool target2) {
+    uint8_t layer, bool target1, bool target2, HdTileSample replacement) {
     if (selected_ & (1u << layer)) return;
-    insert(top_[x], second_[x], {color, key, layer, target1, target2, true});
+    insert(top_[x], second_[x], {color, key, layer, target1, target2, true, replacement});
 }
 // Keep the cached sample inside the subpixel loop so the compiler can hoist
 // the row's fixed palette/surface/layout inputs and avoid a call per sample.
@@ -207,8 +208,29 @@ bool GbaHighResolutionFrame::sample(const Affine& a, int64_t u, int64_t v,
     color = result; return true;
 #endif
 }
-void GbaHighResolutionFrame::write_color(uint8_t* dst, const Pixel& top,
-                                        const Pixel& second) const {
+HdTileSample GbaHighResolutionFrame::tile_sample(const uint8_t* tile, const uint8_t* palette,
+    bool bpp8, bool obj, unsigned x, unsigned y, bool flip_x, bool flip_y) {
+    if (!replacements_) return {};
+    return {replacements_->lookup(tile,palette,bpp8,obj),uint8_t(x),uint8_t(y),flip_x,flip_y};
+}
+void GbaHighResolutionFrame::write_color(uint8_t* dst, Pixel top,
+                                        Pixel second, unsigned sx, unsigned sy) const {
+    auto replace = [&](Pixel& pixel) {
+        const auto& r=pixel.replacement;
+        if(!r.tile) return;
+        const unsigned sub=r.tile->size/8;
+        const unsigned fx=r.flip_x?scale_-1-sx:sx, fy=r.flip_y?scale_-1-sy:sy;
+        const unsigned x=r.x*sub+fx*sub/scale_, y=r.y*sub+fy*sub/scale_;
+        const auto* c=r.tile->rgba.data()+(size_t(y)*r.tile->size+x)*4;
+        // Authored alpha mixes against this tile's original color, never
+        // punches through an unknown underlying layer. Native transparency
+        // and the hardware's silhouette/window/priority remain authoritative.
+        uint8_t old[3]; color::to_rgb888(pixel.color,old);
+        unsigned rgb[3];
+        for(unsigned i=0;i<3;++i) rgb[i]=(unsigned(c[i])*c[3]+unsigned(old[i])*(255-c[3])+127)/255;
+        pixel.color=uint16_t((rgb[0]>>3)|((rgb[1]>>3)<<5)|((rgb[2]>>3)<<10));
+    };
+    replace(top); replace(second);
     const unsigned effect = (bldcnt_ >> 6) & 3;
     const bool alpha = (effect == 1 || top.layer == 4) && top.target1 &&
         second.valid && second.target2 && !(top.layer == 4 && second.layer == 4);
@@ -267,7 +289,7 @@ void GbaHighResolutionFrame::resolve() {
                         bool((windows_[x] & 0x20) && (bldcnt_ & (1u << layer))),
                         bool(bldcnt_ & (0x100u << layer)), true});
                 }
-                write_color(dst, top, second);
+                write_color(dst, top, second, sx, sy);
             }
             for (auto& r : rows) { r.u += r.pa; r.v += r.pc; }
         }

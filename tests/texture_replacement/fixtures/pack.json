@@ -1,0 +1,1 @@
+{"version": 1, "rom_sha1": "fixture", "tiles": [{"key": "0000000000000001", "file": "tile.png"}, {"key": "0000000000000002", "file": "tile.webp"}, {"key": "0000000000000003", "file": "../out.png"}, {"key": "0000000000000004", "file": "absent.png"}]}

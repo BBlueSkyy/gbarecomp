@@ -36,6 +36,10 @@ public:
     void set_internal_resolution(unsigned scale, HighResolutionAffineProvider provider = nullptr);
     unsigned internal_resolution() const { return high_resolution_ ? high_resolution_->scale() : 1; }
     const GbaHighResolutionFrame* high_resolution() const { return high_resolution_.get(); }
+    void set_texture_replacements(TextureReplacementPack* pack) {
+        replacements_ = pack;
+        if (high_resolution_) high_resolution_->set_replacements(pack);
+    }
     const uint8_t* high_resolution_framebuffer() const {
         return high_resolution_ ? high_resolution_->pixels() : nullptr;
     }
@@ -203,6 +207,7 @@ public:
 
 private:
     friend class SimulationStateCodec;
+    TextureReplacementPack* replacements_ = nullptr;
     std::unique_ptr<GbaHighResolutionFrame> high_resolution_;
     HighResolutionAffineProvider high_resolution_provider_ = nullptr;
     PresentationObserver* presentation_ = nullptr; // borrowed; not serialized

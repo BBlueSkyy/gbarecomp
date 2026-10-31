@@ -30,6 +30,7 @@
         <meta-data android:name="gbarecomp.orientation" android:value="${gbaOrientation}" />
         <meta-data android:name="gbarecomp.payload_version" android:value="${gbaPayloadVersion}" />
         <meta-data android:name="gbarecomp.setup_note" android:value="${gbaSetupNote}" />
+        <meta-data android:name="gbarecomp.hd_demo" android:value="${gbaHdDemo}" />
         <meta-data android:name="gbarecomp.gyro" android:value="${gbaGyro}" />
 
         <activity

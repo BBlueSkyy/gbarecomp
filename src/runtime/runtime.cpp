@@ -20,6 +20,7 @@
 // step_once() becomes a real `runtime_dispatch` driver.
 
 #include "runtime.h"
+#include "hd_texture_loader.h"
 #include "runtime_context.h"
 #include "suspend_guard.h"
 #include "multiplayer_launch.h"
@@ -269,6 +270,8 @@ struct RuntimeUiContext {
     RecompRuntimeUi* ui = nullptr;
     float* gyro_sensitivity = nullptr;
     int* internal_resolution = nullptr;
+    gba::TextureReplacementPack* hd_pack = nullptr;
+    const char* hd_pack_directory = nullptr;
     int view_mode = RECOMP_RUNTIME_UI_VIEW_NATIVE;
     bool view_mode_dirty = false;
     // Menu-driven state slots, drained by the main loop alongside the
@@ -318,6 +321,8 @@ int runtime_ui_get(void* opaque, const RecompRuntimeUiItem* item, int* out) {
              c->gyro_sensitivity)
         *out = static_cast<int>(std::lround(*c->gyro_sensitivity * 100.0f));
 #endif
+    else if (std::strcmp(item->key,"video.hd_textures")==0 && c->hd_pack) *out=c->hd_pack->enabled;
+    else if (std::strcmp(item->key,"video.hd_capture")==0 && c->hd_pack) *out=c->hd_pack->capture;
     else if (c->opts && c->opts->ui_get) return c->opts->ui_get(item->key, out);
     else return 0;
     return 1;
@@ -368,6 +373,8 @@ int runtime_ui_set(void* opaque, const RecompRuntimeUiItem* item, int value) {
         *c->gyro_sensitivity =
             std::clamp(static_cast<float>(value) / 100.0f, 0.25f, 4.0f);
 #endif
+    else if (std::strcmp(item->key,"video.hd_textures")==0 && c->hd_pack) c->hd_pack->enabled=value!=0;
+    else if (std::strcmp(item->key,"video.hd_capture")==0 && c->hd_pack) c->hd_pack->capture=value!=0;
     else if (c->opts && c->opts->ui_set) return c->opts->ui_set(item->key, value);
     else return 0;
     return 1;
@@ -1660,13 +1667,36 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     const bool mod_cheats_active = false;
 #endif
 
+    std::unique_ptr<gba::TextureReplacementPack> hd_pack;
+    std::string hd_directory;
+    if (opts.hd_texture_pack) {
+        const char* override_path=std::getenv("GBARECOMP_HD_PACK");
+        hd_directory=override_path&&*override_path?override_path:opts.hd_texture_pack;
+        std::string report;
+        hd_pack=load_hd_texture_pack(hd_directory,opts.builtin_rom_sha1?opts.builtin_rom_sha1:"",report);
+        std::fprintf(stderr,"[HD] %s\n",report.c_str());
+        if(!hd_pack)hd_pack=std::make_unique<gba::TextureReplacementPack>();
+        if(const char* disabled=std::getenv("GBARECOMP_HD_DISABLED"))hd_pack->enabled=std::strcmp(disabled,"1")!=0;
+        if(const char* capture=std::getenv("GBARECOMP_HD_CAPTURE"))hd_pack->capture=std::strcmp(capture,"1")==0;
+    }
+    struct HdCatalogGuard {
+        gba::TextureReplacementPack* pack; const std::string& directory;
+        ~HdCatalogGuard(){if(pack&&!pack->captured().empty()){
+            const bool ok=write_hd_tile_catalog(*pack,directory+"/catalog");
+            std::fprintf(stderr,"[HD] catalog %s, %zu captured tiles; hits=%llu misses=%llu\n",ok?"written":"failed",pack->captured().size(),
+                static_cast<unsigned long long>(pack->hits),static_cast<unsigned long long>(pack->misses));
+        }}
+    } hd_guard{hd_pack.get(),hd_directory};
+    auto hd_scale=[&](){return hd_pack&&hd_pack->enabled&&(hd_pack->size()||hd_pack->capture)
+        ? std::max(3,args.internal_resolution) : args.internal_resolution;};
     gba::GbaBus bus;
     gba::GbaPpu ppu;
-    if (args.internal_resolution > 1 && !opts.high_resolution_affine_provider) {
+    ppu.set_texture_replacements(hd_pack.get());
+    if (args.internal_resolution > 1 && !opts.high_resolution_affine_provider && !opts.hd_texture_pack) {
         std::fprintf(stderr, "This game has not enabled higher internal resolution.\n");
         return 1;
     }
-    ppu.set_internal_resolution(args.internal_resolution, opts.high_resolution_affine_provider);
+    ppu.set_internal_resolution(hd_scale(), opts.high_resolution_affine_provider);
     bus.set_bios(&bios);
     bus.request_audio_shadow(args.audio_shadow);  // [audio].shadow default; env can override
 
@@ -1787,7 +1817,9 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
 #if defined(GBARECOMP_RUNTIME_UI)
     RuntimeUiContext runtime_ui_context;
     runtime_ui_context.opts = &opts;
-    if (opts.high_resolution_affine_provider)
+    runtime_ui_context.hd_pack=hd_pack.get();
+    runtime_ui_context.hd_pack_directory=hd_directory.c_str();
+    if (opts.high_resolution_affine_provider || opts.hd_texture_pack)
         runtime_ui_context.internal_resolution = &args.internal_resolution;
     runtime_ui_context.view_mode = resize_view_enabled
         ? RECOMP_RUNTIME_UI_VIEW_ADAPTIVE
@@ -3013,7 +3045,7 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
     FramePhaseRing frame_phase;
     uint64_t high_resolution_presented = 0;
     auto present_live_frame = [&]() {
-        ppu.set_internal_resolution(args.internal_resolution, opts.high_resolution_affine_provider);
+        ppu.set_internal_resolution(hd_scale(), opts.high_resolution_affine_provider);
         if (const auto* pixels = ppu.high_resolution_framebuffer()) {
             const auto* hd = ppu.high_resolution();
             win.present(pixels, hd->width(), hd->height());
@@ -3306,7 +3338,14 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
         runtime_ui_config.menu.callbacks.get_text = runtime_ui_get_text;
         runtime_ui_config.menu.callbacks.set_text = runtime_ui_set_text;
 #endif
-        if (opts.high_resolution_affine_provider) {
+        if(opts.hd_texture_pack) {
+            const RecompRuntimeUiItem hd_item{"video.hd_textures","Graphics","HD textures",
+                "Use matching PNG/WebP art; unmatched tiles retain original art.",RECOMP_RUNTIME_UI_BOOL,0,1,1,nullptr,0,nullptr};
+            const RecompRuntimeUiItem capture_item{"video.hd_capture","Graphics","Capture tiles for HD art",
+                "Capture up to 1024 native tiles; catalog is saved on exit.",RECOMP_RUNTIME_UI_BOOL,0,1,1,nullptr,0,nullptr};
+            runtime_ui_extras.push_back(hd_item);runtime_ui_extras.push_back(capture_item);
+        }
+        if (opts.high_resolution_affine_provider || opts.hd_texture_pack) {
             static const char* const resolution_choices[] = {
                 "1x", "2x", "3x", "4x",
                 "5x (experimental)", "6x (experimental)", "7x (experimental)",

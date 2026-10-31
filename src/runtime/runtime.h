@@ -48,6 +48,8 @@ struct ExtendedViewFrameInfo {
 struct RunOptions {
     // Optional adapter installed by games that link gbarecomp_netplay.
     std::shared_ptr<GbaNetplayLaunch> netplay;
+    // Optional content/palette keyed HD art. Host presentation only.
+    const char* hd_texture_pack = nullptr;
     const char*   builtin_game_name = nullptr;
     const char*   builtin_rom_sha1  = nullptr;
     std::uint32_t builtin_rom_crc32 = 0;
