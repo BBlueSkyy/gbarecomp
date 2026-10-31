@@ -30,6 +30,7 @@
 #include "gba_bios.h"
 #include "gba_bus.h"
 #include "gba_ppu.h"
+#include "hd_obj_probe.h"
 #include "gba_rom_header.h"
 #include "host_platform.h"
 #include "host_window.h"
@@ -3231,6 +3232,19 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 bus.audio().set_shadow_enabled(enhanced);
         }
         win.set_host_overlay(opts.host_overlay);
+        // Read-only opt-in OBJ/BG attribution. A marker in Android app-private
+        // storage is required even when this title authorizes the capability.
+        // No observer, data access or IO overhead during ordinary sessions.
+        std::unique_ptr<HdObjProbe> hd_probe;
+        if (opts.hd_obj_attribution_probe &&
+            !ppu.presentation_observer()) {
+            const std::string output = win.hd_probe_output_path();
+            if (!output.empty()) {
+                hd_probe = std::make_unique<HdObjProbe>(output);
+                if (hd_probe->active())
+                    ppu.set_presentation_observer(hd_probe.get());
+            }
+        }
         win.set_view_margins(ppu.view_extra_left(), ppu.view_extra_right(),
                              ppu.view_extra_top(), ppu.view_extra_bottom());
         touch_window = &win;
