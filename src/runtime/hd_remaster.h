@@ -7,6 +7,8 @@
 #pragma once
 #include "mini_json.h"
 #include <array>
+#include <cstddef>
+#include <utility>
 #include <cmath>
 #include <cstdint>
 #include <limits>
