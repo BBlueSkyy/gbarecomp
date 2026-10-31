@@ -3210,6 +3210,12 @@ int run_game(int argc, char** argv, const RunOptions& opts) {
                 win.set_mobile_menu_frame_probe(opts.mobile_menu_frame_probe);
 #endif
             win.set_touch_config_dir(exe_dir.c_str());
+            if (opts.hd_pack_manifest && *opts.hd_pack_manifest) {
+                const std::filesystem::path request(opts.hd_pack_manifest);
+                const auto path = request.is_absolute() ? request
+                    : (std::filesystem::path(exe_dir) / request);
+                win.set_hd_pack_manifest(path.string().c_str());
+            }
             // The player's menu choice wins over [audio].shadow;
             // GBARECOMP_AUDIO_SHADOW still overrides both.
             bool enhanced = false;
